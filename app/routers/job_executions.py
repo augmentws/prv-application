@@ -42,6 +42,7 @@ from app.job_executions import (
     CLASSIFICATION_PROJECTION_JOB_TYPE,
     CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     CLASSIFICATION_TRAINING_JOB_TYPE,
+    CODING_COMPARISON_JOB_TYPE,
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
     MATTER_DOCUMENT_IMPORT_JOB_TYPE,
     MATTER_EMBEDDING_JOB_TYPE,
@@ -139,6 +140,8 @@ def _authorized_job(
         authorized = can(db, principal, "batch.configure", ResourceRef.matter(matter.id))
     elif adapter.job_type == MATTER_SEARCH_EXPORT_JOB_TYPE:
         authorized = can(db, principal, "document.export", ResourceRef.matter(matter.id))
+    elif adapter.job_type == CODING_COMPARISON_JOB_TYPE:
+        authorized = can(db, principal, "batch.view", ResourceRef.matter(matter.id))
     elif adapter.job_type == FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE:
         authorized = can(db, principal, "analysis_task.run", ResourceRef.matter(matter.id))
     else:
@@ -152,6 +155,7 @@ def _authorized_job(
                 CLASSIFICATION_SCORING_RUN_JOB_TYPE,
                 CLASSIFICATION_PROJECTION_JOB_TYPE,
                 MATTER_SEARCH_EXPORT_JOB_TYPE,
+                CODING_COMPARISON_JOB_TYPE,
                 FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
             }
             else "Matter ADMIN required"

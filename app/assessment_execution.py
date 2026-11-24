@@ -231,10 +231,7 @@ def _normalized_retrieval_plan(output: dict[str, Any]) -> dict[str, Any]:
     _validate_retrieval_plan(output)
     return {
         "criteria": output["criteria"],
-        "queries": [
-            _normalized_query(item, ordinal=index)[0]
-            for index, item in enumerate(output["queries"], start=1)
-        ],
+        "queries": [_normalized_query(item, ordinal=index)[0] for index, item in enumerate(output["queries"], start=1)],
         "sampling_guidance": output.get("sampling_guidance") or {},
     }
 
@@ -476,9 +473,7 @@ def refine_retrieval_plan(
             if added:
                 details.append(f"added: {', '.join(added)}")
             raise AssessmentError(
-                "A refined retrieval plan must preserve the original criterion keys ("
-                + "; ".join(details)
-                + ")"
+                "A refined retrieval plan must preserve the original criterion keys (" + "; ".join(details) + ")"
             )
 
     output, _ = asyncio.run(
@@ -523,11 +518,7 @@ def refine_retrieval_plan(
 
 def _retrieval_clarification_message(feedback: dict[str, Any]) -> str:
     zero_topics = feedback["zero_result_topics"]
-    topic_message = (
-        f" Topics with no results: {', '.join(zero_topics)}."
-        if zero_topics
-        else ""
-    )
+    topic_message = f" Topics with no results: {', '.join(zero_topics)}." if zero_topics else ""
     return (
         "Retrieval needs clarification before this assessment can start. "
         f"After {feedback['attempt']} planning attempts, retrieval could select "
@@ -698,8 +689,15 @@ def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Se
     source_hashes: list[str] = []
     request_count = 0
     reduce_input_overhead_characters = 0
+    selected_documents = {
+        document.id: document
+        for document in db.scalars(
+            select(MatterDocument).where(MatterDocument.id.in_([item.document_id for item in selected]))
+        )
+    }
+    db.commit()
     for item in selected:
-        document = db.get(MatterDocument, item.document_id)
+        document = selected_documents.get(item.document_id)
         if document is None:
             continue
         source = get_preferred_text_source(
@@ -765,6 +763,7 @@ def analyze_document(
     document = db.get(MatterDocument, document_id)
     if document is None:
         raise AssessmentError("Matter document not found")
+    db.commit()
     source = get_preferred_text_source(
         collection_item_id=document.collection_item_id,
         actor_user_id=assessment.initiated_by_user_id,
@@ -894,12 +893,8 @@ def persist_document_analysis(
             "schema_version": version.output_schema_key,
             "analysis_pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
             "pipeline_mode": (pipeline_diagnostics or {}).get("mode", "UNKNOWN"),
-            "restored_near_miss_count": (pipeline_diagnostics or {}).get(
-                "restored_near_miss_count", 0
-            ),
-            "restored_clarification_count": (pipeline_diagnostics or {}).get(
-                "restored_clarification_count", 0
-            ),
+            "restored_near_miss_count": (pipeline_diagnostics or {}).get("restored_near_miss_count", 0),
+            "restored_clarification_count": (pipeline_diagnostics or {}).get("restored_clarification_count", 0),
             "source_role": source.artifact_role,
             "source_hash": source.content_hash,
             "paragraph_map_version": PARAGRAPH_MAP_VERSION,
@@ -1075,6 +1070,7 @@ async def _execute_document_analysis(
             "window_count": len(plan.windows),
         },
     )
+    db.commit()
     try:
         if len(plan.windows) == 1:
             output = await execute_skill_call(
@@ -1125,6 +1121,7 @@ async def _execute_document_analysis(
             paragraph_map=paragraph_map,
             maximum_characters=get_settings().definition_assessment_map_max_characters,
         )
+        db.commit()
         output = await execute_skill_call(
             db,
             workflow=workflow,
@@ -1140,9 +1137,7 @@ async def _execute_document_analysis(
             },
             cache_identity=cache_identity,
             output_normalizers=(normalize_document_analysis_output,),
-            output_validators=(
-                lambda result: validate_document_analysis_citations(result, query_map),
-            ),
+            output_validators=(lambda result: validate_document_analysis_citations(result, query_map),),
             output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
             additional_instructions=(
                 DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS
@@ -1186,12 +1181,17 @@ async def _execute_document_analysis(
         }
         validate_structured_output(output, version.output_schema)
         complete_skill_run(db, skill_run, refresh_workflow_usage=False)
-        return output, skill_run, {
-            "mode": "QUERY_DIRECTED_LARGE_DOCUMENT",
-            **query_diagnostics,
-        }
+        return (
+            output,
+            skill_run,
+            {
+                "mode": "QUERY_DIRECTED_LARGE_DOCUMENT",
+                **query_diagnostics,
+            },
+        )
     except Exception as exc:
         fail_skill_run(skill_run, exc)
+        db.commit()
         raise
 
 
@@ -1319,11 +1319,16 @@ def _load_synthesis_document_analyses(
             loaded.diagnostics,
         )
     analyses, partial, invalid = _load_document_analyses(db, assessment, matter)
-    return analyses, partial, invalid, {
-        "source": DIRECT_SYNTHESIS_SOURCE,
-        "population_document_count": assessment.selected_count,
-        "loaded_document_count": len(analyses),
-    }
+    return (
+        analyses,
+        partial,
+        invalid,
+        {
+            "source": DIRECT_SYNTHESIS_SOURCE,
+            "population_document_count": assessment.selected_count,
+            "loaded_document_count": len(analyses),
+        },
+    )
 
 
 def _coverage_envelope(
@@ -1500,7 +1505,7 @@ def _enforce_named_issue_references(value: Any, matter_definition: str) -> None:
             suffix = normalized[match.end() :].lstrip()
             if suffix.startswith(":"):
                 raise ValueError(f'{path} must use the exact issue reference "{expected}"')
-            normalized = f"{normalized[:match.start()]}{expected}{normalized[match.end():]}"
+            normalized = f"{normalized[: match.start()]}{expected}{normalized[match.end() :]}"
         return normalized
 
     normalize(value, "output")
@@ -1528,9 +1533,7 @@ def _validate_synthesis_refinement(
     dimension_names = [item.get("dimension") for item in dimensions if isinstance(item, dict)]
     if set(dimension_names) != REFINEMENT_DIMENSIONS or len(dimension_names) != len(REFINEMENT_DIMENSIONS):
         raise ValueError("refinement assessment must evaluate each required dimension exactly once")
-    question_needed = any(
-        isinstance(item, dict) and item.get("conclusion") == "QUESTION_NEEDED" for item in dimensions
-    )
+    question_needed = any(isinstance(item, dict) and item.get("conclusion") == "QUESTION_NEEDED" for item in dimensions)
     sufficient = coverage.get("status") == "SUFFICIENT"
     if not sufficient and outcome != "INSUFFICIENT_EVIDENCE":
         raise ValueError("insufficient coverage requires INSUFFICIENT_EVIDENCE")
@@ -1563,10 +1566,7 @@ def _validate_synthesis_refinement(
             "clarification questions must include at least one question for each recurring near-miss pattern"
         )
 
-    allowed = {
-        str(row["matter_document_id"]): _analysis_citation_ids(row["analysis"])
-        for row in analyses
-    }
+    allowed = {str(row["matter_document_id"]): _analysis_citation_ids(row["analysis"]) for row in analyses}
     evidence_groups = [item.get("evidence") for item in questions if isinstance(item, dict)]
     evidence_groups.extend(
         item.get("evidence")
@@ -1608,8 +1608,7 @@ def _validate_synthesis_refinement(
             and any(
                 isinstance(reference, dict)
                 and any(
-                    (str(reference.get("matter_document_id") or ""), str(paragraph_id))
-                    in allowed_pattern_citations
+                    (str(reference.get("matter_document_id") or ""), str(paragraph_id)) in allowed_pattern_citations
                     for paragraph_id in reference.get("paragraph_ids") or []
                 )
                 for reference in question.get("evidence") or []
@@ -1660,9 +1659,7 @@ def _persist_synthesis(
                 blocking=bool(item.get("blocking", False)),
                 evidence=item.get("evidence") if isinstance(item.get("evidence"), list) else [],
                 suggested_answers=[
-                    str(value).strip()
-                    for value in item.get("suggested_answers") or []
-                    if str(value).strip()
+                    str(value).strip() for value in item.get("suggested_answers") or [] if str(value).strip()
                 ][:3],
             )
         )
@@ -1763,11 +1760,7 @@ def _current_synthesis_attempt(
         if assessment.current_synthesis_attempt_id is not None
         else None
     )
-    if (
-        attempt is not None
-        and attempt.manifest_hash == manifest["content_hash"]
-        and attempt.status == "RUNNING"
-    ):
+    if attempt is not None and attempt.manifest_hash == manifest["content_hash"] and attempt.status == "RUNNING":
         return attempt
 
     reusable_units: dict[tuple[str, str], MatterDefinitionAssessmentSynthesisUnit] = {}
@@ -1857,10 +1850,7 @@ def _run_staged_synthesis(
 
     version = _skill_version(db, assessment, "assessment_synthesis")
     selected_model = model if model is not None else _pinned_model(assessment, "assessment_synthesis")
-    units_by_key = {
-        (str(unit["unit_type"]), str(unit["unit_key"])): unit
-        for unit in manifest["units"]
-    }
+    units_by_key = {(str(unit["unit_type"]), str(unit["unit_key"])): unit for unit in manifest["units"]}
     unit_rows = list(
         db.scalars(
             select(MatterDefinitionAssessmentSynthesisUnit)
@@ -1879,11 +1869,9 @@ def _run_staged_synthesis(
                 "output": completed.output,
             }
             for completed in unit_rows
-            if completed.status == "COMPLETED" and completed.output is not None
-            and not (
-                completed.unit_type == "TOPIC_FINDING"
-                and not str(completed.output.get("finding") or "").strip()
-            )
+            if completed.status == "COMPLETED"
+            and completed.output is not None
+            and not (completed.unit_type == "TOPIC_FINDING" and not str(completed.output.get("finding") or "").strip())
         ]
         dynamic_input = unit_dynamic_input(manifest, unit, completed_outputs)
         row.status = "RUNNING"
@@ -1948,11 +1936,7 @@ def _run_staged_synthesis(
             row.output = output
             row.skill_run_id = skill_run.id
             row.status = "COMPLETED"
-            row.error_details = (
-                {"normalization_warnings": normalization_warnings}
-                if normalization_warnings
-                else {}
-            )
+            row.error_details = {"normalization_warnings": normalization_warnings} if normalization_warnings else {}
             row.completed_at = utcnow()
             db.commit()
         except SQLAlchemyError:
@@ -1971,11 +1955,7 @@ def _run_staged_synthesis(
             row.error_message = str(exc)[:4000]
             row.error_details = {
                 "exception_type": type(exc).__name__,
-                **(
-                    {"normalization_warnings": normalization_warnings}
-                    if normalization_warnings
-                    else {}
-                ),
+                **({"normalization_warnings": normalization_warnings} if normalization_warnings else {}),
             }
             row.completed_at = utcnow()
             db.commit()
@@ -2189,8 +2169,7 @@ def archive_superseded_assessments(
             select(MatterDefinitionAssessmentRun)
             .join(
                 MatterDefinitionRevision,
-                MatterDefinitionRevision.id
-                == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+                MatterDefinitionRevision.id == MatterDefinitionAssessmentRun.matter_definition_revision_id,
             )
             .where(
                 MatterDefinitionAssessmentRun.matter_id == assessment.matter_id,
@@ -2212,9 +2191,7 @@ def archive_superseded_assessments(
 
 def _assessment_terminal_status(assessment: MatterDefinitionAssessmentRun) -> str:
     has_document_errors = bool(
-        assessment.failed_count
-        or assessment.partial_coverage_count
-        or assessment.invalid_result_count
+        assessment.failed_count or assessment.partial_coverage_count or assessment.invalid_result_count
     )
     return (
         "COMPLETED_WITH_ERRORS"
@@ -2230,22 +2207,14 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     refresh_progress(db, assessment_id, commit=False)
     now = utcnow()
     has_document_errors = bool(
-        assessment.failed_count
-        or assessment.partial_coverage_count
-        or assessment.invalid_result_count
+        assessment.failed_count or assessment.partial_coverage_count or assessment.invalid_result_count
     )
-    coverage_snapshot = (
-        assessment.coverage_snapshot
-        if isinstance(assessment.coverage_snapshot, dict)
-        else {}
-    )
+    coverage_snapshot = assessment.coverage_snapshot if isinstance(assessment.coverage_snapshot, dict) else {}
     analysis_input = coverage_snapshot.get("analysis_input", {})
     if not isinstance(analysis_input, dict):
         analysis_input = {}
     fallback_count = int(analysis_input.get("fallback_document_count", 0) or 0)
-    has_document_warnings = bool(
-        has_document_errors or assessment.skipped_count or fallback_count
-    )
+    has_document_warnings = bool(has_document_errors or assessment.skipped_count or fallback_count)
     if assessment.completion_disposition == "READY" and has_document_warnings:
         assessment.completion_disposition = "READY_WITH_WARNINGS"
         assessment.synthesis_diagnostics = {

@@ -419,6 +419,37 @@ distinct from low-confidence matches, missing-document limitations, and general 
 
 ## Analysis tasks
 
+### Eliminate Q&A request amplification and cross-provider blocking
+
+**Current state:** A 250-document Question Answering population is evaluated independently by each execution profile.
+The typed decision and conditional paragraph evidence are separate provider operations, long JEV documents require
+multiple classification windows, and JEV and OpenAI document workflows share one DBOS queue. In the measured
+2026-11-17 privilege run, the first 250-document population produced 1,575 JEV requests and 451 OpenAI requests.
+The JEV run took 52m 14s, which matched its 30-request-per-minute throttle floor, while fast OpenAI calls experienced
+cross-provider head-of-line blocking.
+
+**Risk:** Population size substantially understates provider work and expected runtime. Evidence localization rereads
+documents after their decisions are known, provider contention makes one profile's completion time depend on another,
+and operators cannot distinguish queue wait, throttle wait, provider processing, or request amplification from the
+document progress shown in the UI.
+
+**Desired state:** Return answer-bound paragraph evidence with the first classification response, aggregate compatible
+evidence deterministically across long-document windows, isolate provider queues, minimize windows through exact
+capability-aware request planning, and expose provider-request progress and throttle-aware ETA. Preserve complete
+source coverage, typed-decision semantics, immutable provenance, and partial-coverage reporting.
+
+The architecture, delivery phases, compatibility strategy, tests, measured baseline, and acceptance targets are in the
+[Question-Answering Batch Performance Improvement Plan](question-answering-performance-plan.md).
+
+**Completion criteria:**
+
+- Inline-capable documents do not receive an automatic second evidence-localization request.
+- Long documents use one normal provider request per planned window, with evidence bound to the aggregated answer.
+- A slow JEV run cannot occupy OpenAI document capacity.
+- The frozen 250-document privilege cohort reduces combined provider requests by at least 35% without a material
+  decision or evidence-quality regression.
+- The job UI reports planned/executed requests, windows, queue wait, throttle floor, provider time, and profile ETA.
+
 ### Support provider-bounded evaluation of large documents
 
 **Current state:** Question Answering Analysis Tasks build one complete document state and reject it when its

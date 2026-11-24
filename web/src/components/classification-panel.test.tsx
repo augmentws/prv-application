@@ -62,6 +62,24 @@ const hierarchicalText = {
   hierarchy_separator: "/",
 } as never;
 
+const trecPrivilege = {
+  id: "field-trec-priv",
+  display_name: "TREC privilege coding",
+  key: "trec_priv_coding",
+  type: "BOOLEAN",
+  cardinality: "SINGLE",
+  status: "ACTIVE",
+  value_source: "ASSERTED",
+  facetable: true,
+} as never;
+
+const trecBatch = {
+  id: "batch-trec-304",
+  name: "Topic 304 Reviewer",
+  document_count: 20_365,
+  status: "READY",
+} as never;
+
 const completedEmbeddingJob = {
   id: "embedding-1",
   status: "COMPLETED",
@@ -82,7 +100,7 @@ const recoveredEmbeddingJob = {
   chunk_count: 446_520,
 } as never;
 
-function renderPanel(options?: { definitions?: never[]; embeddingJobs?: never[] }) {
+function renderPanel(options?: { definitions?: never[]; embeddingJobs?: never[]; reviewBatches?: never[] }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -90,7 +108,7 @@ function renderPanel(options?: { definitions?: never[]; embeddingJobs?: never[] 
         clientId="client-1"
         matterId="matter-1"
         definitions={options?.definitions ?? [responsiveness, customNotes, importedSubject]}
-        reviewBatches={[]}
+        reviewBatches={options?.reviewBatches ?? []}
         embeddingJobs={options?.embeddingJobs ?? []}
       />
     </QueryClientProvider>,
@@ -206,6 +224,93 @@ describe("ClassificationPanel", () => {
       "/v1/matters/matter-1/classification-models/model-1/training-jobs",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("uses reviewer coding from the selected review batch as training labels", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/matters/matter-1/classification-models" && !options) return [] as never;
+      if (path.endsWith("/review-batches/batch-trec-304/comparison-options")) return {
+        review_batch_id: "batch-trec-304",
+        sources: [{
+          id: "reviewer-coding-1",
+          source_type: "REVIEWER",
+          label: "TREC importer",
+          detail: "reviewer+one@augment.ws",
+          metadata_definition_ids: ["field-trec-priv"],
+          created_at: "2026-11-18T12:00:00Z",
+        }],
+        fields: [],
+      } as never;
+      if (path.endsWith("/classification-models/targets/field-trec-priv/distribution")) return {
+        population_count: 20_365,
+        labeled_document_count: 10_365,
+        unlabeled_document_count: 10_000,
+        conflicting_document_count: 0,
+        class_counts: [
+          { class_key: "false", label: "False", document_count: 9_145 },
+          { class_key: "true", label: "True", document_count: 1_220 },
+        ],
+      } as never;
+      if (path === "/v1/matters/matter-1/classification-models" && options?.method === "POST") return {
+        id: "model-trec",
+        target_metadata_definition_id: "field-trec-priv",
+      } as never;
+      if (path.endsWith("/configurations")) return { id: "configuration-trec" } as never;
+      if (path.endsWith("/training-jobs")) return { created: true, training_job: { id: "job-trec" } } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderPanel({
+      definitions: [trecPrivilege],
+      embeddingJobs: [completedEmbeddingJob],
+      reviewBatches: [trecBatch],
+    });
+    await user.click(await screen.findByRole("button", { name: /TREC privilege coding/ }));
+    await user.click(screen.getByRole("combobox", { name: "Training scope" }));
+    await user.click(screen.getByRole("option", { name: "Review batch" }));
+    await user.click(screen.getByRole("combobox", { name: "Review batch" }));
+    await user.click(screen.getByRole("option", { name: /Topic 304 Reviewer/ }));
+
+    expect(await screen.findByRole("combobox", { name: "Training labels" })).toHaveTextContent(
+      "TREC importer",
+    );
+    expect(await screen.findByText("10,365")).toBeInTheDocument();
+    const distributionCall = vi.mocked(coreApi).mock.calls.find(([path]) => (
+      path.endsWith("/classification-models/targets/field-trec-priv/distribution")
+    ));
+    expect(JSON.parse(String(distributionCall?.[1]?.body))).toMatchObject({
+      training_scope: { scope_type: "REVIEW_BATCH", scope_id: "batch-trec-304" },
+      label_source: {
+        kind: "HUMAN_REVIEW",
+        authority: "GOLD",
+        source_reference_id: "reviewer-coding-1",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Train model" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/classification-models/model-trec/configurations",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const configurationCall = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/configurations"));
+    expect(JSON.parse(String(configurationCall?.[1]?.body))).toMatchObject({
+      classification_strategy: "BINARY",
+      ordered_class_keys: ["false", "true"],
+      binary_mapping: {
+        negative_class_key: "false",
+        positive_class_key: "true",
+        negative_value_keys: ["false"],
+        positive_value_keys: ["true"],
+      },
+      label_policy: {
+        allowed_sources: [{
+          kind: "HUMAN_REVIEW",
+          authority: "GOLD",
+          source_reference_id: "reviewer-coding-1",
+        }],
+      },
+    });
   });
 
   it("falls back to database coding only when a field cannot be faceted", async () => {

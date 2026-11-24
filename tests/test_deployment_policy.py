@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import Settings, configure_worker_database_profile, get_settings
 from app.deployment_policy import DeploymentSecretError, reject_development_secrets
 from artifact_service.config import ArtifactSettings
 from classification_service.config import ClassificationSettings
@@ -86,6 +86,82 @@ def test_database_url_override_is_used_as_given(monkeypatch: pytest.MonkeyPatch)
     _set_env(monkeypatch, DATABASE_URL="sqlite+pysqlite:///:memory:")
 
     assert Settings(_env_file=None).database_url == "sqlite+pysqlite:///:memory:"
+
+
+def test_core_database_pool_capacity_is_bounded_and_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(
+        monkeypatch,
+        DATABASE_POOL_SIZE=None,
+        DATABASE_MAX_OVERFLOW=None,
+        DATABASE_POOL_TIMEOUT_SECONDS=None,
+    )
+    defaults = Settings(_env_file=None)
+    assert defaults.database_pool_size == 10
+    assert defaults.database_max_overflow == 2
+    assert defaults.database_pool_timeout_seconds == 30
+
+    _set_env(
+        monkeypatch,
+        DATABASE_POOL_SIZE="12",
+        DATABASE_MAX_OVERFLOW="24",
+        DATABASE_POOL_TIMEOUT_SECONDS="45",
+    )
+    configured = Settings(_env_file=None)
+    assert configured.database_pool_size == 12
+    assert configured.database_max_overflow == 24
+    assert configured.database_pool_timeout_seconds == 45
+
+
+def test_worker_database_pool_reserves_control_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(
+        monkeypatch,
+        DATABASE_POOL_PROFILE="worker",
+        DATABASE_POOL_SIZE="12",
+        DATABASE_MAX_OVERFLOW="0",
+        WORKER_DATABASE_CONCURRENCY="10",
+        WORKER_DATABASE_CONTROL_RESERVE="2",
+    )
+    settings = Settings(_env_file=None)
+    assert settings.database_application_name == "priv-view-workflow-worker"
+
+    _set_env(monkeypatch, DATABASE_MAX_OVERFLOW="1")
+    with pytest.raises(ValidationError, match="DATABASE_MAX_OVERFLOW=0"):
+        Settings(_env_file=None)
+
+
+def test_worker_entrypoint_forces_worker_pool_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(
+        monkeypatch,
+        DATABASE_POOL_PROFILE="api",
+        DATABASE_POOL_SIZE="10",
+        DATABASE_MAX_OVERFLOW="2",
+        WORKER_DATABASE_POOL_SIZE="14",
+        WORKER_DATABASE_CONCURRENCY="10",
+        WORKER_DATABASE_CONTROL_RESERVE="2",
+    )
+    configure_worker_database_profile()
+    try:
+        settings = get_settings()
+        assert settings.database_pool_profile == "worker"
+        assert settings.database_pool_size == 14
+        assert settings.database_max_overflow == 0
+    finally:
+        get_settings.cache_clear()
+
+
+def test_artifact_database_pool_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(
+        monkeypatch,
+        ARTIFACT_DATABASE_POOL_SIZE=None,
+        ARTIFACT_DATABASE_MAX_OVERFLOW=None,
+        ARTIFACT_DATABASE_POOL_TIMEOUT_SECONDS=None,
+    )
+    settings = ArtifactSettings(_env_file=None)
+    assert settings.database_pool_size == 8
+    assert settings.database_max_overflow == 2
+    assert settings.database_pool_timeout_seconds == 30
 
 
 def test_artifact_storage_connection_pool_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:

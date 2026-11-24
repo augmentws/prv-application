@@ -246,27 +246,39 @@ class OpenAIDecisionsEngine:
         started_monotonic = self._monotonic()
         response: httpx.Response | None = None
         attempts = 0
+        concurrency_started = time.perf_counter()
+        concurrency_wait_seconds = 0.0
+        rate_limit_wait_seconds = 0.0
+        provider_call_seconds = 0.0
+        retry_wait_seconds = 0.0
         async with self._concurrency_gate:
+            concurrency_wait_seconds = time.perf_counter() - concurrency_started
             for attempt in range(max_retries + 1):
                 attempts = attempt + 1
-                await self._limiter.acquire(
+                limiter_wait = await self._limiter.acquire(
                     (self.provider, model),
                     estimated_input_tokens=estimated_tokens,
                     requests_per_minute=self._settings.openai_decisions_requests_per_minute,
                     input_tokens_per_minute=self._settings.openai_decisions_input_tokens_per_minute,
                 )
+                rate_limit_wait_seconds += float(limiter_wait or 0.0)
                 try:
-                    async with self._client_factory(timeout=timeout) as client:
-                        response = await client.post(
-                            f"{self._settings.openai_base_url.rstrip('/')}/decisions",
-                            headers=headers,
-                            json=body,
-                        )
+                    provider_started = time.perf_counter()
+                    try:
+                        async with self._client_factory(timeout=timeout) as client:
+                            response = await client.post(
+                                f"{self._settings.openai_base_url.rstrip('/')}/decisions",
+                                headers=headers,
+                                json=body,
+                            )
+                    finally:
+                        provider_call_seconds += time.perf_counter() - provider_started
                 except httpx.RequestError as exc:
                     if attempt >= max_retries:
                         raise self._transport_error(exc) from exc
                     delay = self._retry_delay(None, attempt)
                     self._limiter.defer((self.provider, model), delay)
+                    retry_wait_seconds += delay
                     await self._sleep(delay)
                     continue
                 if response.status_code < 400:
@@ -276,6 +288,7 @@ class OpenAIDecisionsEngine:
                     raise self._http_error(response, retryable=retryable)
                 delay = self._retry_delay(response, attempt)
                 self._limiter.defer((self.provider, model), delay)
+                retry_wait_seconds += delay
                 await self._sleep(delay)
         if response is None:  # pragma: no cover - loop returns or raises
             raise RuntimeError("OpenAI Decisions retry loop exited without a response")
@@ -312,6 +325,10 @@ class OpenAIDecisionsEngine:
             provider_metadata={
                 "api": "decisions",
                 "http_status": response.status_code,
+                "concurrency_wait_ms": max(0, round(concurrency_wait_seconds * 1000)),
+                "rate_limit_wait_ms": max(0, round(rate_limit_wait_seconds * 1000)),
+                "provider_call_ms": max(0, round(provider_call_seconds * 1000)),
+                "retry_wait_ms": max(0, round(retry_wait_seconds * 1000)),
             },
         )
 

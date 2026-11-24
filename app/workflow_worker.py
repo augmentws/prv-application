@@ -3,7 +3,7 @@ import threading
 
 from dbos import DBOS
 
-from app.config import get_settings
+from app.config import configure_worker_database_profile, get_settings
 from app.deployment_policy import load_core_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    configure_worker_database_profile()
     load_core_runtime_settings()
     settings = get_settings()
     logger.info(
@@ -27,6 +28,8 @@ def main() -> None:
             "application_version": settings.dbos_application_version,
             "system_database_url": settings.dbos_system_database_url or settings.database_url,
             "dbos_system_schema": settings.dbos_system_schema,
+            "sys_db_pool_size": settings.dbos_runtime_system_pool_size,
+            "sys_db_polling_concurrency": settings.dbos_system_polling_concurrency,
         }
     )
     from app.workflows import (  # noqa: F401
@@ -43,17 +46,23 @@ def main() -> None:
         classification_models,
         classification_projections,
         classification_scoring,
+        coding_comparisons,
         collection_deletion,
         collection_text_processing,
         evidence_assessments,
         evidence_stage_retries,
         fact_development,
         fact_specification_compilation,
+        identity_analysis,
+        identity_domain_recommendations,
+        job_execution_reconciliation,
         matter_definition_assessments,
         matter_deletion,
         matter_embeddings,
         matter_import,
         matter_topics,
+        privilege_review_adjudication,
+        privilege_review_evidence,
         review_batches,
         review_programs,
         search_exports,

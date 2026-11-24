@@ -16,12 +16,23 @@ from collections.abc import Iterable
 from email.utils import getaddresses
 from typing import Any, Literal
 
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
-from app.models import Custodian, Matter, MatterEntity, MatterEntityEvent, utcnow
+from app.models import Custodian, Matter, MatterEntity, MatterEntityDomain, MatterEntityEvent, utcnow
 
 EntityType = Literal["PERSON", "ORGANIZATION"]
+OrganizationCategory = Literal[
+    "LAW_FIRM",
+    "CORPORATION",
+    "GOVERNMENT",
+    "ACCOUNTING_FIRM",
+    "CONSULTING_FIRM",
+    "INSURER",
+    "EMAIL_PROVIDER",
+    "OTHER",
+    "UNKNOWN",
+]
 ActorType = Literal["HUMAN", "AGENT", "SYSTEM"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_QUOTE_NOISE = "\"'\u2018\u2019\u201c\u201d"
@@ -220,6 +231,7 @@ def create_entity(
     *,
     matter: Matter,
     entity_type: EntityType,
+    organization_category: OrganizationCategory | None = None,
     display_name: str | None,
     email: str | None = None,
     title: str | None = None,
@@ -234,6 +246,8 @@ def create_entity(
 ) -> MatterEntity:
     if entity_type != "PERSON" and (title is not None or organization_id is not None):
         raise MatterEntityError("Only people have a title or an organization")
+    if entity_type != "ORGANIZATION" and organization_category is not None:
+        raise MatterEntityError("Only organizations have an organization category")
     if display_name is None and email is None:
         raise MatterEntityError("An entity requires a display name or an email address")
     name = _clean_name(display_name) if display_name is not None else None
@@ -244,6 +258,7 @@ def create_entity(
         matter_id=matter.id,
         parent_id=None,
         entity_type=entity_type,
+        organization_category=organization_category,
         display_name=name,
         normalized_name=normalize_entity_name(name) if name is not None else None,
         email=email.strip() if email else None,
@@ -264,6 +279,7 @@ def create_entity(
         "CREATED",
         {
             "entity_type": entity_type,
+            "organization_category": organization_category,
             "display_name": entity.display_name,
             "email": entity.email,
             "title": entity.title,
@@ -384,7 +400,9 @@ def update_entity(
     entity: MatterEntity,
     lock_version: int,
     changes: dict[str, Any],
-    actor_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None,
+    actor_type: ActorType = "HUMAN",
+    workflow_run_id: uuid.UUID | None = None,
 ) -> MatterEntity:
     """Edit a canonical entity's descriptive fields. ``changes`` holds only the fields the caller set."""
 
@@ -406,6 +424,12 @@ def update_entity(
             raise MatterEntityError("Only people have a title")
         before["title"], after["title"] = entity.title, changes["title"]
         entity.title = changes["title"]
+    if "organization_category" in changes:
+        if entity.entity_type != "ORGANIZATION" and changes["organization_category"] is not None:
+            raise MatterEntityError("Only organizations have an organization category")
+        before["organization_category"] = entity.organization_category
+        after["organization_category"] = changes["organization_category"]
+        entity.organization_category = changes["organization_category"]
     if "organization_id" in changes:
         if entity.entity_type != "PERSON" and changes["organization_id"]:
             raise MatterEntityError("Only people have an organization")
@@ -426,7 +450,15 @@ def update_entity(
     if not after:
         raise MatterEntityError("No entity changes were supplied")
     _bump(entity)
-    _record(db, entity, "UPDATED", {"before": before, "after": after}, actor_type="HUMAN", actor_user_id=actor_user_id)
+    _record(
+        db,
+        entity,
+        "UPDATED",
+        {"before": before, "after": after},
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        workflow_run_id=workflow_run_id,
+    )
     return entity
 
 
@@ -453,6 +485,7 @@ def reject_entity(
 ) -> MatterEntity:
     """Reject a canonical entity and remove it (and its variants) from every fact that references it."""
 
+    from app.entity_relationships import reject_relationships_for_entity
     from app.facts import detach_entities_from_facts
 
     if entity.parent_id is not None:
@@ -467,6 +500,16 @@ def reject_entity(
     prior = entity.status
     entity.status = "REJECTED"
     _bump(entity)
+    removed_domains = list(
+        db.scalars(select(MatterEntityDomain.normalized_domain).where(MatterEntityDomain.entity_id == entity.id))
+    )
+    if removed_domains:
+        db.execute(delete(MatterEntityDomain).where(MatterEntityDomain.entity_id == entity.id))
+    rejected_relationship_ids = reject_relationships_for_entity(
+        db,
+        entity_id=entity.id,
+        actor_user_id=actor_user_id,
+    )
     detached = detach_entities_from_facts(
         db,
         matter_id=entity.matter_id,
@@ -478,7 +521,13 @@ def reject_entity(
         db,
         entity,
         "REJECTED",
-        {"prior_status": prior, "reason": reason, "detached_fact_ids": [str(fact_id) for fact_id in detached]},
+        {
+            "prior_status": prior,
+            "reason": reason,
+            "detached_fact_ids": [str(fact_id) for fact_id in detached],
+            "removed_domains": removed_domains,
+            "rejected_relationship_ids": [str(value) for value in rejected_relationship_ids],
+        },
         actor_type="HUMAN",
         actor_user_id=actor_user_id,
     )
@@ -495,6 +544,8 @@ def merge_entities(
 ) -> MatterEntity:
     """Make ``source`` and its variants variants of ``target``. Facts follow automatically."""
 
+    from app.entity_relationships import reconcile_relationships_for_merge
+
     if source.parent_id is not None or target.parent_id is not None:
         raise MatterEntityError("Only canonical entities can be merged")
     if source.id == target.id:
@@ -507,6 +558,8 @@ def merge_entities(
         raise MatterEntityConflict("Entities cannot be merged into a rejected entity")
     _check_version(source, source_lock_version)
     reassigned_organization_member_ids: list[uuid.UUID] = []
+    moved_domain_mapping_ids: list[uuid.UUID] = []
+    target_prior_organization_category = target.organization_category
     if source.entity_type == "ORGANIZATION":
         reassigned_organization_member_ids = list(
             db.scalars(select(MatterEntity.id).where(MatterEntity.organization_id == source.id))
@@ -514,6 +567,25 @@ def merge_entities(
         db.execute(
             update(MatterEntity).where(MatterEntity.organization_id == source.id).values(organization_id=target.id)
         )
+        moved_domain_mapping_ids = list(
+            db.scalars(select(MatterEntityDomain.id).where(MatterEntityDomain.entity_id == source.id))
+        )
+        if moved_domain_mapping_ids:
+            db.execute(
+                update(MatterEntityDomain)
+                .where(MatterEntityDomain.id.in_(moved_domain_mapping_ids))
+                .values(entity_id=target.id)
+            )
+        if source.organization_category is not None:
+            if target.organization_category not in {None, source.organization_category}:
+                raise MatterEntityConflict("Organizations with conflicting categories cannot be merged")
+            target.organization_category = source.organization_category
+    relationship_changes = reconcile_relationships_for_merge(
+        db,
+        source_entity_id=source.id,
+        target_entity_id=target.id,
+        actor_user_id=actor_user_id,
+    )
     moved_variant_ids = list(db.scalars(select(MatterEntity.id).where(MatterEntity.parent_id == source.id)))
     db.execute(update(MatterEntity).where(MatterEntity.parent_id == source.id).values(parent_id=target.id))
     prior = {
@@ -523,12 +595,18 @@ def merge_entities(
         "custodian_id": str(source.custodian_id) if source.custodian_id else None,
         "moved_variant_ids": [str(value) for value in moved_variant_ids],
         "reassigned_organization_member_ids": [str(value) for value in reassigned_organization_member_ids],
+        "organization_category": source.organization_category,
+        "target_prior_organization_category": target_prior_organization_category,
+        "moved_domain_mapping_ids": [str(value) for value in moved_domain_mapping_ids],
+        "moved_relationship_ids": [str(value) for value in relationship_changes["moved"]],
+        "rejected_relationship_ids": [str(value) for value in relationship_changes["rejected"]],
     }
     source.parent_id = target.id
     source.status = None
     source.title = None
     source.organization_id = None
     source.custodian_id = None
+    source.organization_category = None
     _bump(source)
     _bump(target)
     _record(
@@ -601,6 +679,23 @@ def unmerge_entity(
                 .where(MatterEntity.id.in_(member_ids), MatterEntity.organization_id == parent.id)
                 .values(organization_id=variant.id)
             )
+        if variant.entity_type == "ORGANIZATION":
+            variant.organization_category = prior.get("organization_category")
+            domain_mapping_ids = [uuid.UUID(value) for value in prior.get("moved_domain_mapping_ids", [])]
+            if domain_mapping_ids:
+                db.execute(
+                    update(MatterEntityDomain)
+                    .where(MatterEntityDomain.id.in_(domain_mapping_ids), MatterEntityDomain.entity_id == parent.id)
+                    .values(entity_id=variant.id)
+                )
+            target_prior_category = prior.get("target_prior_organization_category")
+            if (
+                target_prior_category is None
+                and parent.organization_category == variant.organization_category
+                and db.scalar(select(MatterEntityDomain.id).where(MatterEntityDomain.entity_id == parent.id).limit(1))
+                is None
+            ):
+                parent.organization_category = None
     else:
         variant.status = "CONFIRMED"
     _bump(variant)

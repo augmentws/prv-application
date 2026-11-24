@@ -22,7 +22,7 @@ import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 
 export function BatchesSection() {
-  const { matterId, permissionKeys } = useMatter();
+  const { clientId, matterId, permissionKeys } = useMatter();
   const queryClient = useQueryClient();
   const canDeleteBatches = permissionKeys.has("batch.delete");
   const groups = useQuery({ queryKey: ["metadata-groups", matterId], queryFn: () => coreApi<MetadataGroupRead[]>(`/v1/matters/${matterId}/metadata-groups`) });
@@ -105,7 +105,7 @@ export function BatchesSection() {
   if (reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending || assessments.isPending) return <TableLoading />;
   if (reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error || assessments.error) return <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message ?? assessments.error?.message} />;
   return <div className="space-y-4">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} assessments={assessments.data} onCreate={createReviewBatch} /></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" asChild><Link href={`/app/clients/${clientId}/matters/${matterId}/batches/comparisons`}><BarChart3 />Compare coding</Link></Button><CreateReviewBatchDialog matterId={matterId} groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} assessments={assessments.data} onCreate={createReviewBatch} /></div></div>
     <DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." />
   </div>;
 }
@@ -159,9 +159,20 @@ function BatchMaterializationProgress({ batch }: { batch: ReviewBatchRead }) {
 }
 
 function batchSelectionLabel(batch: ReviewBatchRead) {
+  if (batch.selection_type === "SAVED_SEARCH") {
+    const name = batch.selection_definition.saved_search_name;
+    return typeof name === "string" ? `${name} · all matches` : "All saved-search matches";
+  }
   if (batch.selection_type === "RANDOM_SAVED_SEARCH") {
     const name = batch.selection_definition.saved_search_name;
     return typeof name === "string" ? `${name} sample` : "Random saved-search sample";
+  }
+  if (batch.selection_type === "COMPOSITE_SAVED_SEARCH") {
+    const fixedName = batch.selection_definition.fixed_saved_search_name;
+    const sampleName = batch.selection_definition.sample_saved_search_name;
+    return typeof fixedName === "string" && typeof sampleName === "string"
+      ? `${fixedName} + ${sampleName} sample`
+      : "Fixed query + random sample";
   }
   if (batch.selection_type === "RANDOM_ASSESSMENT") {
     const name = batch.selection_definition.assessment_name;

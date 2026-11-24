@@ -26,11 +26,21 @@ class ArtifactSettings(BaseSettings):
     )
     # Optional full-URL override, used by the test suite; normally unset.
     database_url_override: str | None = Field(default=None, validation_alias="ARTIFACT_DATABASE_URL")
+    database_pool_size: int = Field(default=8, ge=1, le=100)
+    database_max_overflow: int = Field(default=2, ge=0, le=100)
+    database_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    database_pool_recycle_seconds: int = Field(default=1800, ge=30, le=86_400)
+    database_statement_timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    database_idle_transaction_timeout_seconds: int = Field(default=30, ge=1, le=3600)
+    database_checkout_warning_seconds: float = Field(default=1.0, gt=0, le=300)
+    database_transaction_warning_seconds: float = Field(default=30.0, gt=0, le=3600)
     storage_endpoint_url: str = "http://localhost:9000"
     storage_access_key: str = Field(min_length=1)
     storage_secret_key: str = Field(min_length=1)
     storage_region: str = "us-east-1"
     storage_max_pool_connections: int = Field(default=32, ge=1, le=256)
+    text_processing_chunk_size: int = Field(default=250, ge=10, le=2_000)
+    text_processing_concurrency: int = Field(default=4, ge=1, le=32)
     bucket_prefix: str = "pv-artifacts"
     bucket_suffix_length: int = Field(default=10, ge=8, le=32)
     upload_max_bytes: int = Field(default=2 * 1024**3, ge=1024 * 1024, le=20 * 1024**3)

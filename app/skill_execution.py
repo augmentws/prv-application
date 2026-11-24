@@ -40,10 +40,11 @@ async def execute_skill_run(
     limits: dict[str, Any] | None = None,
     additional_instructions: str | None = None,
     refresh_workflow_usage: bool = True,
-    checkpoint_before_model_call: bool = False,
+    checkpoint_before_model_call: bool = True,
     rate_limit_policy: ModelRateLimitPolicy | None = None,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
+    model_settings: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], SkillRun]:
     skill_run = create_skill_run(
         db,
@@ -55,6 +56,7 @@ async def execute_skill_run(
         request_input={"stable_context": stable_context, "dynamic_input": dynamic_input},
         output_schema=output_schema,
         limits=limits,
+        model_settings=model_settings,
     )
     if checkpoint_before_model_call:
         # Persist admission before a potentially long provider/rate-limit wait.
@@ -80,6 +82,7 @@ async def execute_skill_run(
             refresh_workflow_usage=refresh_workflow_usage,
             usage_job_type=usage_job_type,
             model=model,
+            model_settings=model_settings,
             rate_limit_policy=rate_limit_policy,
         )
         complete_skill_run(
@@ -90,6 +93,11 @@ async def execute_skill_run(
         return output, skill_run
     except Exception as exc:
         fail_skill_run(skill_run, exc)
+        if checkpoint_before_model_call:
+            # The RUNNING row was already made durable. Persist its terminal
+            # failure in a new short transaction rather than relying on a
+            # caller to rescue it after the provider exception.
+            db.commit()
         raise
 
 
@@ -104,12 +112,14 @@ def create_skill_run(
     request_input: dict[str, Any],
     output_schema: dict[str, Any] | None = None,
     limits: dict[str, Any] | None = None,
+    model_settings: dict[str, Any] | None = None,
 ) -> SkillRun:
     effective_schema = output_schema or skill_version.output_schema
     effective_limits = limits or skill_version.limits
+    effective_model_settings = skill_version.model_policy if model_settings is None else model_settings
     configuration = {
         "model_key": skill_version.model_key,
-        "model_policy": skill_version.model_policy,
+        "model_policy": effective_model_settings,
         "limits": effective_limits,
         "cache_policy": skill_version.cache_policy,
         "output_schema_key": skill_version.output_schema_key,
@@ -151,6 +161,7 @@ async def execute_skill_call(
     attempt: int = 1,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
+    model_settings: dict[str, Any] | None = None,
     rate_limit_policy: ModelRateLimitPolicy | None = None,
 ) -> dict[str, Any]:
     usage_context = ProviderUsageContext(
@@ -176,7 +187,7 @@ async def execute_skill_call(
         output_schema=output_schema or skill_version.output_schema,
         provider_output_schema=provider_output_schema,
         model_key=skill_version.model_key,
-        model_settings=skill_version.model_policy,
+        model_settings=skill_version.model_policy if model_settings is None else model_settings,
         limits=limits or skill_version.limits,
         cache_policy=skill_version.cache_policy,
         cache_identity=cache_identity,
@@ -246,8 +257,6 @@ def fail_skill_run(skill_run: SkillRun, exc: Exception) -> None:
     )
     skill_run.error_message = str(exc)[:4000]
     skill_run.error_details = (
-        exc.details
-        if isinstance(exc, ModelExecutionError)
-        else {"exception_type": type(exc).__name__}
+        exc.details if isinstance(exc, ModelExecutionError) else {"exception_type": type(exc).__name__}
     )
     skill_run.completed_at = datetime.now(timezone.utc)

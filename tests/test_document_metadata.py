@@ -184,6 +184,14 @@ def test_single_value_events_update_projection_and_preserve_history(
             )
             == 6
         )
+        latest_operation = db.scalar(
+            select(SearchProjectionOperation)
+            .where(SearchProjectionOperation.kind == "DOCUMENT_UPSERT")
+            .order_by(SearchProjectionOperation.created_at.desc())
+        )
+        assert latest_operation is not None
+        assert latest_operation.payload["projection_scope"] == "MATTER_CODING_FIELDS"
+        assert latest_operation.payload["metadata_definition_ids"] == [responsiveness["id"]]
 
 
 def test_multiple_values_and_confirmation_policy(

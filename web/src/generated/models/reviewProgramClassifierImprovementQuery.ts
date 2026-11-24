@@ -15,6 +15,11 @@ export interface ReviewProgramClassifierImprovementQuery {
   class_key: string;
   /**
      * @minLength 1
+     * @maxLength 500
+     */
+  criterion_key: string;
+  /**
+     * @minLength 1
      * @maxLength 2000
      */
   query: string;
@@ -23,4 +28,10 @@ export interface ReviewProgramClassifierImprovementQuery {
      * @maximum 25000
      */
   quota?: number;
+  expanded_query?: string | null;
+  /**
+     * @minimum 1
+     * @maximum 25000
+     */
+  expanded_quota?: number;
 }

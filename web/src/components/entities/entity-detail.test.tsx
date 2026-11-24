@@ -57,7 +57,18 @@ beforeEach(() => {
     if (path.startsWith("/v1/authorization/effective")) return { permission_keys: permissionKeys } as never;
     if (path === "/v1/matters/matter-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Smith, Jane", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-10-01T12:00:00Z" }] as never;
     if (path.includes("entity_type=ORGANIZATION&limit=500")) return { items: [entity({ id: "org-1", entity_type: "ORGANIZATION", display_name: "Acme Corp", variants: [], title: null, organization_id: null })], total: 1 } as never;
+    if (path === "/v1/matters/matter-1/entities?status=CONFIRMED&limit=500") return { items: [entity({ id: "org-1", entity_type: "ORGANIZATION", organization_category: "CORPORATION", display_name: "Acme Corp", variants: [], title: null, organization_id: null })], total: 1 } as never;
     if (path.startsWith("/v1/matters/matter-1/entities?entity_type=PERSON")) return { items: [entity(), entity({ id: "entity-2", display_name: "Jane A. Smith", variants: [] })], total: 2 } as never;
+    if (path === "/v1/matters/matter-1/entity-relationships?entity_id=entity-1") return [] as never;
+    if (path === "/v1/matters/matter-1/entity-relationships/types") return [{
+      key: "OUTSIDE_COUNSEL_FOR",
+      forward_label: "Outside counsel for",
+      inverse_label: "Represented by outside counsel",
+      source_entity_types: ["ORGANIZATION"],
+      source_organization_categories: ["LAW_FIRM"],
+      target_entity_types: ["ORGANIZATION", "PERSON"],
+    }] as never;
+    if (path === "/v1/matters/matter-1/entity-relationships" && method === "POST") return {} as never;
     if (path === "/v1/matters/matter-1/entities/entity-1" && method === "GET") return entity() as never;
     if (path === "/v1/matters/matter-1/facts/search") return { items: [{ id: "fact-1", summary: "Jane approved prices.", status: "CONFIRMED", date_precision: "MONTH", event_date_start: "2021-03-01", event_date_end: null }], total: 2 } as never;
     if (path.endsWith("/merge")) return entity({ id: "entity-2", display_name: "Jane A. Smith" }) as never;
@@ -127,5 +138,60 @@ describe("EntityDetail", () => {
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Split off/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Facts" })).not.toBeInTheDocument();
+  });
+
+  it("records a registry-defined relationship from the generic Related UI", async () => {
+    const user = userEvent.setup();
+    const fallback = vi.mocked(coreApi).getMockImplementation();
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      const method = init?.method ?? "GET";
+      if (path === "/v1/matters/matter-1/entities/entity-1" && method === "GET") return entity({
+        entity_type: "ORGANIZATION",
+        organization_category: "LAW_FIRM",
+        display_name: "Kirkland & Ellis",
+        email: null,
+        title: null,
+        organization_id: null,
+        custodian_id: null,
+        variants: [],
+      }) as never;
+      if (path === "/v1/matters/matter-1/entity-relationships/types") return [
+        {
+          key: "OUTSIDE_COUNSEL_FOR",
+          forward_label: "Outside counsel for",
+          inverse_label: "Represented by outside counsel",
+          source_entity_types: ["ORGANIZATION"],
+          source_organization_categories: ["LAW_FIRM"],
+          target_entity_types: ["ORGANIZATION", "PERSON"],
+        },
+        {
+          key: "ADVISER_TO",
+          forward_label: "Adviser to",
+          inverse_label: "Advised by",
+          source_entity_types: ["ORGANIZATION"],
+          source_organization_categories: ["LAW_FIRM"],
+          target_entity_types: ["ORGANIZATION"],
+        },
+      ] as never;
+      if (fallback) return fallback(path, init);
+      throw new Error(`Unexpected request ${method} ${path}`);
+    });
+
+    renderDetail();
+    expect(await screen.findByRole("heading", { name: "Related" })).toBeInTheDocument();
+    const relationshipType = await screen.findByRole("combobox", { name: "Relationship type" });
+    expect(relationshipType).toHaveTextContent("Outside counsel for");
+    await user.click(relationshipType);
+    await user.click(await screen.findByRole("option", { name: "Adviser to" }));
+    await user.click(screen.getByRole("combobox", { name: "Related entity" }));
+    await user.click(await screen.findByRole("option", { name: "Acme Corp" }));
+    await user.click(screen.getByRole("button", { name: "Add relationship" }));
+    await waitFor(() => expect(bodyOf("/v1/matters/matter-1/entity-relationships")).toEqual({
+      source_entity_id: "entity-1",
+      target_entity_id: "org-1",
+      relationship_type: "ADVISER_TO",
+      status: "CONFIRMED",
+    }));
+    expect(screen.getByText(/may improve review signals/)).toBeInTheDocument();
   });
 });

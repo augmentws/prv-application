@@ -2,7 +2,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,12 +22,20 @@ from app.models import (
     MatterDefinitionAssessmentRun,
     MatterDocument,
     MetadataDefinition,
+    ReviewBatchRunDocument,
     ReviewBatchRunValue,
     ReviewDecisionResult,
     ReviewProgram,
+    ReviewProgramAction,
     ReviewProgramChild,
     ReviewProgramCompletionReport,
     ReviewProgramRun,
+)
+from app.privilege_backtests import build_privilege_backtest_cohort
+from app.privilege_review_programs import (
+    PrivilegeReviewFoundationError,
+    prepare_privilege_evidence_packets,
+    prepare_privilege_family_context,
 )
 from app.review_batch_comparisons import (
     ComparisonDocument,
@@ -41,6 +49,8 @@ from app.review_programs import (
     _human_adjudicated_issue_keys,
     _program_qa_result_run_profile_map,
     _qa_task_records,
+    attach_privilege_evidence_packets,
+    attach_privilege_family_context,
     cancel_review_program_discovery_children,
     cancel_review_program_discovery_qa,
     cancel_review_program_run,
@@ -49,11 +59,14 @@ from app.review_programs import (
     get_review_program,
     get_review_program_run,
     prepare_review_program_negative_population_qc_inventory,
+    preview_review_program_classifier_improvement,
     reconcile_review_program_run,
+    refresh_privilege_evidence_action_contract,
     reset_review_program_discovery_qa,
     resolve_review_program_action,
     retry_review_program_run,
     review_program_action_decision_context,
+    review_program_adjudication_cancellation_targets,
     review_program_assessment_cancellation_targets,
     review_program_run_details,
     setup_review_program_classifier_improvement,
@@ -69,11 +82,16 @@ from app.review_workflow_templates import (
     ReviewWorkflowTemplateSpec,
 )
 from app.schemas import (
+    PrivilegeBacktestCohortPreviewRead,
+    PrivilegeBacktestCohortPreviewRequest,
+    PrivilegeFamilyContextPrepare,
     ReviewBatchComparisonFieldOptionRead,
     ReviewBatchComparisonRequest,
     ReviewBatchComparisonSourceOptionRead,
     ReviewProgramActionRead,
     ReviewProgramActionResolve,
+    ReviewProgramClassifierImprovementPreview,
+    ReviewProgramClassifierImprovementPreviewRead,
     ReviewProgramClassifierImprovementSetup,
     ReviewProgramCompletionReportRead,
     ReviewProgramCreate,
@@ -102,6 +120,7 @@ from app.workflows.dispatcher import (
     cancel_classification_model_scoring,
     cancel_classification_training_job,
     cancel_definition_assessment,
+    cancel_privilege_review_adjudication,
     cancel_review_batch,
 )
 
@@ -125,6 +144,44 @@ def _program_read(db: Session, program: ReviewProgram) -> ReviewProgramRead:
     )
 
 
+def _live_privilege_evidence_progress(
+    db: Session,
+    run: ReviewProgramRun,
+) -> dict[str, object]:
+    progress = dict(run.progress_summary or {})
+    evidence = dict(progress.get("privilege_evidence") or {})
+    if run.current_stage != "PRIVILEGE_EVIDENCE" or evidence.get("state") not in {
+        "RUNNING",
+        "DRAINING_AFTER_FAILURE",
+    }:
+        return progress
+    try:
+        review_batch_run_id = uuid.UUID(str(evidence["review_batch_run_id"]))
+    except (KeyError, TypeError, ValueError):
+        return progress
+    counts = {
+        status: int(count)
+        for status, count in db.execute(
+            select(ReviewBatchRunDocument.status, func.count())
+            .where(ReviewBatchRunDocument.review_batch_run_id == review_batch_run_id)
+            .group_by(ReviewBatchRunDocument.status)
+        ).all()
+    }
+    queued = counts.get("QUEUED", 0)
+    progress["privilege_evidence"] = {
+        **evidence,
+        "state": (
+            "DRAINING_AFTER_FAILURE"
+            if run.status == "FAILED" and queued > 0
+            else evidence.get("state")
+        ),
+        "completed_document_count": counts.get("COMPLETED", 0),
+        "failed_document_count": counts.get("FAILED", 0),
+        "queued_document_count": queued,
+    }
+    return progress
+
+
 def _run_read(db: Session, run: ReviewProgramRun) -> ReviewProgramRunRead:
     attempts, actions, events = review_program_run_details(db, run)
     action_reads = [
@@ -141,6 +198,7 @@ def _run_read(db: Session, run: ReviewProgramRun) -> ReviewProgramRunRead:
     ]
     return ReviewProgramRunRead.model_validate(run).model_copy(
         update={
+            "progress_summary": _live_privilege_evidence_progress(db, run),
             "stage_attempts": [ReviewProgramStageAttemptRead.model_validate(item) for item in attempts],
             "actions": action_reads,
             "events": [ReviewProgramEventRead.model_validate(item) for item in events],
@@ -469,6 +527,11 @@ def create_program(
             description=payload.description,
             owner_user_id=payload.owner_user_id,
             matter_definition_id=payload.matter_definition_id,
+            privilege_review=(
+                payload.privilege_review.model_dump(mode="python")
+                if payload.privilege_review is not None
+                else None
+            ),
         )
         db.commit()
     except (ReviewProgramError, ReviewWorkflowTemplateError) as exc:
@@ -498,6 +561,93 @@ def read_review_program(
         raise _http_error(exc) from exc
 
 
+@router.post(
+    "/{program_id}/privilege-backtest-cohort/preview",
+    response_model=PrivilegeBacktestCohortPreviewRead,
+)
+def preview_privilege_backtest_cohort(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    payload: PrivilegeBacktestCohortPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> PrivilegeBacktestCohortPreviewRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.view")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id)
+        if program.template_key != "PRIVILEGE_REVIEW":
+            raise ValueError("Backtest cohorts require a Privilege Review source program")
+        cohort = build_privilege_backtest_cohort(
+            db,
+            program=program,
+            truth_metadata_definition_id=payload.truth_metadata_definition_id,
+            actor_user_id=principal.user.id,
+            per_stratum=payload.per_stratum,
+            random_seed=payload.random_seed,
+        )
+        return PrivilegeBacktestCohortPreviewRead.model_validate(cohort)
+    except (ReviewProgramError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/{program_id}/privilege-family-context", response_model=ReviewProgramRead)
+def prepare_program_privilege_family_context(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    payload: PrivilegeFamilyContextPrepare,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRead:
+    matter = _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id)
+        current = current_review_program_version(db, program)
+        if current.id != payload.expected_program_version_id:
+            raise ReviewProgramError("The Review Program has changed; refresh it and try again")
+        configuration = current.configuration_snapshot.get("privilege_review")
+        if program.template_key != "PRIVILEGE_REVIEW" or not isinstance(configuration, dict):
+            raise ReviewProgramError("Family context can be prepared only for a Privilege Review program")
+        existing = configuration.get("family_context")
+        if isinstance(existing, dict) and existing.get("artifact_id"):
+            return _program_read(db, program)
+        population_reference = configuration.get("review_population")
+        if not isinstance(population_reference, dict):
+            raise ReviewProgramError("Privilege Review population is unavailable")
+        tenant_id = program.tenant_id
+        expected_version_id = current.id
+        # Release the Core connection before reading Artifact data. The immutable
+        # version check below protects against a concurrent program update.
+        db.commit()
+        family_context, family_context_hash = prepare_privilege_family_context(
+            matter=matter,
+            tenant_id=tenant_id,
+            program=program,
+            actor_user_id=principal.user.id,
+            population_reference=population_reference,
+        )
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        attach_privilege_family_context(
+            db,
+            program=program,
+            actor=principal.user,
+            expected_program_version_id=expected_version_id,
+            family_context=family_context,
+            family_context_content_hash=family_context_hash,
+        )
+        db.commit()
+    except (ReviewProgramError, PrivilegeReviewFoundationError, PermissionError, ValueError) as exc:
+        db.rollback()
+        raise _http_error(ReviewProgramError(str(exc))) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The family-context version conflicts with an existing Review Program update",
+        ) from exc
+    db.refresh(program)
+    return _program_read(db, program)
+
+
 @router.get("/{program_id}/runs", response_model=list[ReviewProgramRunRead])
 def list_review_program_runs(
     matter_id: uuid.UUID,
@@ -519,6 +669,13 @@ def list_review_program_runs(
         )
     )
     _reconcile_definition_assessment_runs(db, runs, settings=settings)
+    refreshed_contracts = [
+        refresh_privilege_evidence_action_contract(db, program=program, run=run) for run in runs
+    ]
+    if any(refreshed_contracts):
+        db.commit()
+        for run in runs:
+            db.refresh(run)
     return [_run_read(db, run) for run in runs]
 
 
@@ -568,6 +725,9 @@ def read_program_run(
         program = get_review_program(db, matter_id=matter_id, program_id=program_id)
         run = get_review_program_run(db, program=program, run_id=run_id)
         _reconcile_definition_assessment_runs(db, [run], settings=settings)
+        if refresh_privilege_evidence_action_contract(db, program=program, run=run):
+            db.commit()
+            db.refresh(run)
         return _run_read(db, run)
     except ReviewProgramError as exc:
         raise _http_error(exc) from exc
@@ -1022,7 +1182,7 @@ def resolve_program_action(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> ReviewProgramRunRead:
-    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    matter = _matter_with_permission(db, principal, matter_id, "review_program.manage")
     assessment_cancellations: list[tuple[uuid.UUID, str | None]] = []
     discovery_batch_set_workflows: list[str] = []
     discovery_batch_run_workflows: list[str] = []
@@ -1033,6 +1193,52 @@ def resolve_program_action(
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
         run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        if payload.choice_key == "PREPARE_EVIDENCE_PACKETS":
+            action = db.get(ReviewProgramAction, action_id)
+            if (
+                action is None
+                or action.run_id != run.id
+                or action.status != "OPEN"
+                or action.preview_hash != payload.preview_hash
+                or run.pending_action_id != action.id
+                or run.current_stage != "PRIVILEGE_EVIDENCE"
+                or payload.choice_key not in {choice.get("key") for choice in action.allowed_choices}
+            ):
+                raise ReviewProgramError("Privilege evidence packet action is no longer available")
+            current = current_review_program_version(db, program)
+            configuration = current.configuration_snapshot
+            privilege_review = configuration.get("privilege_review")
+            accepted_definition = configuration.get("accepted_matter_definition")
+            if not isinstance(privilege_review, dict) or not isinstance(accepted_definition, dict):
+                raise ReviewProgramError("Privilege Review evidence inputs are incomplete")
+            family_context = privilege_review.get("family_context")
+            identity_context = privilege_review.get("identity_context")
+            if not isinstance(family_context, dict) or not isinstance(identity_context, dict):
+                raise ReviewProgramError("Privilege Review family or identity context is unavailable")
+            existing_packets = privilege_review.get("evidence_packets")
+            if not (isinstance(existing_packets, dict) and existing_packets.get("artifact_id")):
+                expected_version_id = current.id
+                db.commit()
+                evidence_packets, evidence_packets_hash = prepare_privilege_evidence_packets(
+                    matter=matter,
+                    tenant_id=program.tenant_id,
+                    program=program,
+                    actor_user_id=principal.user.id,
+                    family_context_reference=family_context,
+                    identity_context_reference=identity_context,
+                    accepted_matter_definition=accepted_definition,
+                )
+                program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+                run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+                attach_privilege_evidence_packets(
+                    db,
+                    program=program,
+                    run=run,
+                    actor=principal.user,
+                    expected_program_version_id=expected_version_id,
+                    evidence_packets=evidence_packets,
+                    evidence_packets_content_hash=evidence_packets_hash,
+                )
         if payload.choice_key == "STOP":
             assessment_cancellations = [
                 (assessment.id, workflow.dbos_workflow_id if workflow is not None else None)
@@ -1223,6 +1429,40 @@ def setup_program_discovery(
 
 
 @router.post(
+    "/{program_id}/runs/{run_id}/actions/{action_id}/classifier-improvement-preview",
+    response_model=ReviewProgramClassifierImprovementPreviewRead,
+)
+def preview_program_classifier_improvement(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    action_id: uuid.UUID,
+    payload: ReviewProgramClassifierImprovementPreview,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramClassifierImprovementPreviewRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        preview = preview_review_program_classifier_improvement(
+            db,
+            program=program,
+            run=run,
+            action_id=action_id,
+            preview_hash=payload.preview_hash,
+            queries=[query.model_dump(mode="json") for query in payload.queries],
+            target_batch_size=payload.target_batch_size,
+            keep_families_together=payload.keep_families_together,
+        )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    return ReviewProgramClassifierImprovementPreviewRead.model_validate(preview)
+
+
+@router.post(
     "/{program_id}/runs/{run_id}/actions/{action_id}/classifier-improvement-setup",
     response_model=ReviewProgramRunRead,
     status_code=status.HTTP_202_ACCEPTED,
@@ -1247,8 +1487,8 @@ def setup_program_classifier_improvement(
             action_id=action_id,
             actor=principal.user,
             preview_hash=payload.preview_hash,
+            retrieval_preview_hash=payload.retrieval_preview_hash,
             queries=[query.model_dump(mode="json") for query in payload.queries],
-            control_sample_size=payload.control_sample_size,
             target_batch_size=payload.target_batch_size,
             keep_families_together=payload.keep_families_together,
         )
@@ -1376,6 +1616,10 @@ def cancel_program_run(
             (assessment.id, workflow.dbos_workflow_id if workflow is not None else None)
             for assessment, workflow in review_program_assessment_cancellation_targets(db, run)
         ]
+        adjudication_cancellations = [
+            workflow.dbos_workflow_id
+            for _review_run, workflow in review_program_adjudication_cancellation_targets(db, run)
+        ]
         (
             discovery_batch_set_workflows,
             discovery_batch_run_workflows,
@@ -1404,6 +1648,8 @@ def cancel_program_run(
         cancel_provider_batches(db, assessment_id)
         if dbos_workflow_id:
             cancel_definition_assessment(dbos_workflow_id)
+    for workflow_id in adjudication_cancellations:
+        cancel_privilege_review_adjudication(workflow_id)
     for workflow_id in discovery_batch_set_workflows:
         cancel_analysis_task_batch_set_workflow(workflow_id)
     for workflow_id in discovery_batch_run_workflows:

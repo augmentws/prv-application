@@ -28,6 +28,7 @@ import type {
   MatterFacetValuesResponse,
   MatterEmbeddingJobRead,
   MetadataDefinitionRead,
+  ReviewBatchComparisonOptionsRead,
   ReviewBatchRead,
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
@@ -124,6 +125,7 @@ export function ClassificationPanel({
   const [hierarchyLevel, setHierarchyLevel] = useState("");
   const [scopeType, setScopeType] = useState<ScopeType>("MATTER");
   const [scopeBatchId, setScopeBatchId] = useState("");
+  const [labelSourceChoice, setLabelSourceChoice] = useState("AUTO");
   const [embeddingJobId, setEmbeddingJobId] = useState("");
   const [validationPercent, setValidationPercent] = useState("20");
   const [randomSeed, setRandomSeed] = useState("42");
@@ -158,7 +160,39 @@ export function ClassificationPanel({
   const runningEmbeddingJob = embeddingJobs.find((job) => ["QUEUED", "PLANNING", "RUNNING"].includes(job.status));
   const readyBatches = reviewBatches.filter((batch) => batch.status === "READY");
   const distributionScopeId = scopeType === "MATTER" ? matterId : scopeBatchId;
-  const waitingForDistributionScope = scopeType === "REVIEW_BATCH" && !scopeBatchId;
+  const labelSources = useQuery({
+    queryKey: ["classification-label-sources", matterId, scopeBatchId],
+    queryFn: () => coreApi<ReviewBatchComparisonOptionsRead>(`/v1/matters/${matterId}/review-batches/${scopeBatchId}/comparison-options`),
+    enabled: scopeType === "REVIEW_BATCH" && Boolean(scopeBatchId),
+  });
+  const reviewerLabelSources = (labelSources.data?.sources ?? []).filter((source) => (
+    source.source_type === "REVIEWER"
+    && Boolean(selectedFieldId)
+    && source.metadata_definition_ids.includes(selectedFieldId ?? "")
+  ));
+  const explicitlySelectedReviewer = labelSourceChoice.startsWith("REVIEWER:")
+    ? reviewerLabelSources.find((source) => `REVIEWER:${source.id}` === labelSourceChoice)
+    : null;
+  const selectedReviewerSource = scopeType === "REVIEW_BATCH"
+    ? explicitlySelectedReviewer ?? (labelSourceChoice === "AUTO" ? reviewerLabelSources[0] : null)
+    : null;
+  const effectiveLabelSourceChoice = selectedReviewerSource
+    ? `REVIEWER:${selectedReviewerSource.id}`
+    : "MATTER";
+  const labelSourceSpecification = selectedReviewerSource
+    ? {
+        kind: "HUMAN_REVIEW" as const,
+        authority: "GOLD" as const,
+        source_weight: 1,
+        source_reference_id: selectedReviewerSource.id,
+      }
+    : {
+        kind: "MATTER_ASSERTED" as const,
+        authority: "SILVER" as const,
+        source_weight: 1,
+      };
+  const waitingForLabelSources = scopeType === "REVIEW_BATCH" && Boolean(scopeBatchId) && labelSources.isPending;
+  const waitingForDistributionScope = (scopeType === "REVIEW_BATCH" && !scopeBatchId) || waitingForLabelSources;
   const parsedHierarchyLevel = Number(hierarchyLevel);
   const distributionHierarchyLevel = hierarchyLevel.trim()
     && Number.isInteger(parsedHierarchyLevel)
@@ -167,10 +201,10 @@ export function ClassificationPanel({
     ? parsedHierarchyLevel
     : null;
   const distribution = useQuery({
-    queryKey: ["classification-target-distribution", matterId, selectedFieldId, scopeType, distributionScopeId, distributionHierarchyLevel],
+    queryKey: ["classification-target-distribution", matterId, selectedFieldId, scopeType, distributionScopeId, distributionHierarchyLevel, effectiveLabelSourceChoice],
     queryFn: async (): Promise<ClassificationDistribution> => {
       if (!selectedField) throw new Error("Choose a coding field.");
-      if (selectedField.hierarchy_separator) {
+      if (selectedReviewerSource || selectedField.hierarchy_separator) {
         return coreApi<ClassificationTargetDistributionRead>(
           `/v1/matters/${matterId}/classification-models/targets/${selectedField.id}/distribution`,
           {
@@ -181,6 +215,7 @@ export function ClassificationPanel({
                 scope_id: distributionScopeId,
               },
               hierarchy_level: distributionHierarchyLevel,
+              label_source: labelSourceSpecification,
             }),
           },
         );
@@ -228,11 +263,12 @@ export function ClassificationPanel({
               scope_id: distributionScopeId,
             },
             hierarchy_level: null,
+            label_source: labelSourceSpecification,
           }),
         },
       );
     },
-    enabled: Boolean(selectedFieldId && distributionScopeId),
+    enabled: Boolean(selectedFieldId && distributionScopeId) && !waitingForLabelSources && !labelSources.error,
   });
 
   const prepareEmbeddings = useMutation({
@@ -272,13 +308,21 @@ export function ClassificationPanel({
         }),
       });
       const effectiveStrategy = selectedField.type === "BOOLEAN" ? "BINARY" : strategy;
+      const booleanClassKeys = selectedField.type === "BOOLEAN" ? ["false", "true"] : [];
       const configurationPayload: ClassificationModelConfigurationCreate = {
         classification_strategy: effectiveStrategy,
         hierarchy_level: selectedField.hierarchy_separator && hierarchyLevel.trim() ? selectedHierarchyLevel : null,
-        ordered_class_keys: [],
-        binary_mapping: null,
+        ordered_class_keys: booleanClassKeys,
+        binary_mapping: selectedField.type === "BOOLEAN"
+          ? {
+              negative_class_key: "false",
+              positive_class_key: "true",
+              negative_value_keys: ["false"],
+              positive_value_keys: ["true"],
+            }
+          : null,
         label_policy: {
-          allowed_sources: [{ kind: "MATTER_ASSERTED", authority: "SILVER", source_weight: 1 }],
+          allowed_sources: [labelSourceSpecification],
           missing_label_action: "EXCLUDE",
           source_conflict_action: "REQUIRE_ADJUDICATION",
           target_value_conflict_action: "EXCLUDE",
@@ -373,6 +417,7 @@ export function ClassificationPanel({
                   setStrategy(defaultStrategy(field));
                   setHierarchyLevel("");
                   setName(`${field.display_name} model`);
+                  setLabelSourceChoice("AUTO");
                 }}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -433,8 +478,9 @@ export function ClassificationPanel({
             <div className="space-y-2"><Label htmlFor="classification-name">Model name</Label><Input id="classification-name" value={name} onChange={(event) => setName(event.target.value)} /></div>
             <div className="space-y-2"><Label>Classification strategy</Label><Select value={selectedStrategy} onValueChange={(value) => setStrategy(value as Strategy)} disabled={selectedField.type === "BOOLEAN"}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="BINARY">Binary — exactly two observed classes</SelectItem><SelectItem value="MULTICLASS" disabled={selectedField.cardinality === "MULTIPLE"}>Multiclass — one class per document</SelectItem><SelectItem value="ONE_VS_REST">One vs rest — independent class decisions</SelectItem></SelectContent></Select></div>
             {selectedField.hierarchy_separator ? <div className="space-y-2"><Label htmlFor="classification-hierarchy-level">Training hierarchy level</Label><Input id="classification-hierarchy-level" type="number" min={1} max={32} step={1} placeholder="Full path" value={hierarchyLevel} onChange={(event) => setHierarchyLevel(event.target.value)} /><p className="text-xs text-muted-foreground">Level 1 is the root. Leave blank to train on each complete <code>{selectedField.hierarchy_separator}</code>-delimited path.</p></div> : null}
-            <div className="space-y-2"><Label>Training scope</Label><Select value={scopeType} onValueChange={(value) => setScopeType(value as ScopeType)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="MATTER">Entire matter</SelectItem><SelectItem value="REVIEW_BATCH">Review batch</SelectItem></SelectContent></Select></div>
-            {scopeType === "REVIEW_BATCH" ? <div className="space-y-2"><Label>Review batch</Label><Select value={scopeBatchId} onValueChange={setScopeBatchId}><SelectTrigger><SelectValue placeholder="Choose a ready batch" /></SelectTrigger><SelectContent>{readyBatches.map((batch) => <SelectItem key={batch.id} value={batch.id}>{batch.name} · {batch.document_count.toLocaleString()} documents</SelectItem>)}</SelectContent></Select></div> : null}
+            <div className="space-y-2"><Label>Training scope</Label><Select value={scopeType} onValueChange={(value) => { setScopeType(value as ScopeType); setLabelSourceChoice("AUTO"); }}><SelectTrigger aria-label="Training scope"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="MATTER">Entire matter</SelectItem><SelectItem value="REVIEW_BATCH">Review batch</SelectItem></SelectContent></Select></div>
+            {scopeType === "REVIEW_BATCH" ? <div className="space-y-2"><Label>Review batch</Label><Select value={scopeBatchId} onValueChange={(value) => { setScopeBatchId(value); setLabelSourceChoice("AUTO"); }}><SelectTrigger aria-label="Review batch"><SelectValue placeholder="Choose a ready batch" /></SelectTrigger><SelectContent>{readyBatches.map((batch) => <SelectItem key={batch.id} value={batch.id}>{batch.name} · {batch.document_count.toLocaleString()} documents</SelectItem>)}</SelectContent></Select></div> : null}
+            {scopeType === "REVIEW_BATCH" && scopeBatchId ? <div className="space-y-2"><Label>Training labels</Label><Select value={effectiveLabelSourceChoice} onValueChange={setLabelSourceChoice} disabled={labelSources.isPending || Boolean(labelSources.error)}><SelectTrigger aria-label="Training labels"><SelectValue placeholder="Loading coding sources…" /></SelectTrigger><SelectContent>{reviewerLabelSources.map((source) => <SelectItem key={source.id} value={`REVIEWER:${source.id}`}>{source.label}{source.detail ? ` · ${source.detail}` : ""}</SelectItem>)}<SelectItem value="MATTER">Current matter coding</SelectItem></SelectContent></Select>{selectedReviewerSource ? <p className="text-xs text-muted-foreground">Uses this reviewer&apos;s completed coding and pins its current revision when training starts.</p> : <p className="text-xs text-muted-foreground">Uses resolved coding currently stored on the matter.</p>}{labelSources.error ? <p className="text-xs text-destructive">Reviewer coding sources could not be loaded. Training is disabled until this is resolved.</p> : null}</div> : null}
             <div className="space-y-2"><Label>Train / validation split</Label><Select value={validationPercent} onValueChange={setValidationPercent}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{validationOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select><p className="text-xs text-muted-foreground">Implemented as {selectedValidation.folds}-fold group-aware cross-validation; every document is held out once.</p></div>
             <div className="space-y-2"><Label htmlFor="classification-seed">Random seed</Label><Input id="classification-seed" inputMode="numeric" value={randomSeed} onChange={(event) => setRandomSeed(event.target.value)} /></div>
           </div>
@@ -451,7 +497,7 @@ export function ClassificationPanel({
 
           <div className="rounded-lg border p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><p className="flex items-center gap-2 font-medium"><Database className="size-4" />Document features</p><p className="mt-1 text-xs text-muted-foreground">Training uses the matter’s completed document embeddings. Current matter coding supplies the labels.</p></div>
+              <div><p className="flex items-center gap-2 font-medium"><Database className="size-4" />Document features</p><p className="mt-1 text-xs text-muted-foreground">Training uses the matter’s completed document embeddings. {selectedReviewerSource ? `${selectedReviewerSource.label} supplies the reviewer labels.` : "Current matter coding supplies the labels."}</p></div>
               {!usableEmbeddingJobs.length && !runningEmbeddingJob ? <Button variant="outline" onClick={() => prepareEmbeddings.mutate()} disabled={prepareEmbeddings.isPending}>{prepareEmbeddings.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Prepare embeddings</Button> : null}
             </div>
             {usableEmbeddingJobs.length ? <div className="mt-3 space-y-2"><Label>Embedding set</Label><div className="flex flex-wrap items-center gap-2"><div className="min-w-72 flex-1"><Select value={activeEmbeddingJobId} onValueChange={setEmbeddingJobId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{usableEmbeddingJobs.map((job) => <SelectItem key={job.id} value={job.id}>{job.status === "CANCELED" ? "Recovered completed output · " : ""}{job.embedding_model} · {job.embedding_dimensions} dimensions · {job.chunk_count.toLocaleString()} chunks</SelectItem>)}</SelectContent></Select></div>{activeEmbeddingJob ? <JobOutcomesDialog matterId={matterId} jobType="MATTER_EMBEDDING_JOB" jobId={activeEmbeddingJob.id} jobName={`${activeEmbeddingJob.embedding_model} embedding job`} /> : null}</div>{activeEmbeddingJob?.status === "CANCELED" ? <p className="text-xs text-muted-foreground">This run was canceled after all {activeEmbeddingJob.processed_count.toLocaleString()} documents were processed. Its completed chunk output can still be used for training.</p> : null}</div> : runningEmbeddingJob ? <p className="mt-3 text-sm text-muted-foreground">Embeddings are {runningEmbeddingJob.status.toLowerCase()}. This page will refresh their status automatically.</p> : <p className="mt-3 text-sm text-muted-foreground">Prepare document embeddings before training can begin.</p>}
@@ -460,7 +506,7 @@ export function ClassificationPanel({
           <div className="rounded-lg border p-4">
             <div className="mb-3">
               <p className="flex items-center gap-2 font-medium"><ChartColumn className="size-4" />Class distribution</p>
-              <p className="mt-1 text-xs text-muted-foreground">Current matter coding for the selected training scope. Each row shows the document count for one class.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{selectedReviewerSource ? `Completed reviewer coding from ${selectedReviewerSource.label}` : "Current matter coding"} for the selected training scope. Each row shows the document count for one class.</p>
             </div>
             <ClassificationDistributionChart
               distribution={distribution.data}
@@ -471,8 +517,8 @@ export function ClassificationPanel({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">Classes will be discovered from current coding and frozen with this training run.</p>
-            <Button onClick={() => trainModel.mutate()} disabled={!name.trim() || !activeEmbeddingJob || (scopeType === "REVIEW_BATCH" && !scopeBatchId) || trainModel.isPending}>{trainModel.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}{stageLabel(trainingStage)}</Button>
+            <p className="text-xs text-muted-foreground">Classes and the selected label-source revision will be frozen with this training run.</p>
+            <Button onClick={() => trainModel.mutate()} disabled={!name.trim() || !activeEmbeddingJob || (scopeType === "REVIEW_BATCH" && !scopeBatchId) || waitingForLabelSources || Boolean(labelSources.error) || trainModel.isPending}>{trainModel.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}{stageLabel(trainingStage)}</Button>
           </div>
         </CardContent>
       </Card>

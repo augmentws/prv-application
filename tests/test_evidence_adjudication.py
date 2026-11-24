@@ -38,17 +38,22 @@ from app.evidence_compatibility_projection import (
     apply_narrative_projection,
     build_evidence_compatibility_projection,
     compatibility_projection_bytes,
+    compatibility_projection_derivation_key,
     load_compatibility_projection_bytes,
+    store_compatibility_projection_artifact,
 )
 from app.evidence_document_decision import (
     ANALYSIS_DOCUMENT_DECISION_SCHEMA_VERSION,
     build_document_decision_result,
     document_decision_bytes,
+    document_decision_derivation_key,
     load_document_decision_bytes,
+    store_document_decision_artifact,
 )
 from app.evidence_first_artifacts import (
     AnalysisRoleBinding,
     CompactedEvidenceObservations,
+    SelectedExtractionAttempt,
 )
 from app.evidence_first_contracts import (
     AggregatedEvidenceObservation,
@@ -491,6 +496,72 @@ def test_document_decision_artifact_is_bounded_json() -> None:
     assert workflow_artifact_max_bytes(ArtifactType.ANALYSIS_DOCUMENT_DECISION) > 0
 
 
+def test_document_decision_artifact_reuses_identical_prior_producer(monkeypatch) -> None:
+    plan, _ = _plan()
+    criterion_result = compact_adjudication_attempts(
+        plan,
+        [
+            _model_attempt(plan),
+            deterministic_empty_attempt(
+                plan,
+                plan.packets[1],
+                attempt=1,
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+    catalog = freeze_criterion_catalog(
+        [
+            {
+                "criterion_key": "attorney_client_privilege",
+                "display_label": "Attorney-client privilege",
+                "instruction_text": "Identify confidential requests for legal advice.",
+            },
+            {
+                "criterion_key": "work_product",
+                "display_label": "Work product",
+                "instruction_text": "Identify material prepared in anticipation of litigation.",
+            },
+        ]
+    )
+    result = build_document_decision_result(
+        plan,
+        criterion_result,
+        criterion_decisions_artifact=_artifact_reference(
+            ArtifactType.ANALYSIS_CRITERION_DECISIONS
+        ),
+        catalog=catalog,
+    )
+    content = document_decision_bytes(result)
+    existing = replace(
+        _artifact_reference(ArtifactType.ANALYSIS_DOCUMENT_DECISION),
+        derivation_key=document_decision_derivation_key(result),
+        content_hash=hashlib.sha256(content).hexdigest(),
+        byte_length=len(content),
+        producer_run_id=uuid.UUID(int=999),
+    )
+    store = MagicMock()
+    monkeypatch.setattr(
+        "app.evidence_document_decision.find_workflow_artifact_reference",
+        lambda **_kwargs: existing,
+    )
+    monkeypatch.setattr(
+        "app.evidence_document_decision.copy_workflow_artifact_content",
+        lambda *, destination, **_kwargs: destination.write(content),
+    )
+    monkeypatch.setattr("app.evidence_document_decision.store_workflow_artifact", store)
+
+    reference, created = store_document_decision_artifact(
+        result,
+        producer_run_id=uuid.UUID(int=1000),
+        actor_user_id=uuid.UUID(int=10),
+    )
+
+    assert reference == existing
+    assert created is False
+    store.assert_not_called()
+
+
 def test_compatibility_projection_preserves_adjudicated_match_and_lineage() -> None:
     plan, observations = _plan()
     now = datetime(2026, 11, 15, tzinfo=timezone.utc)
@@ -590,6 +661,88 @@ def test_compatibility_projection_preserves_adjudicated_match_and_lineage() -> N
     assert load_narrative_result_bytes(narrative_result_bytes(narrative_result)) == narrative_result
 
 
+def test_compatibility_projection_accepts_family_qualified_citations() -> None:
+    plan, observations = _plan()
+    member_document_id = uuid.UUID(int=99)
+    family_citation = f"document:{member_document_id}:¶1"
+    family_observation = observations.observations[0].model_copy(
+        update={"citation_ids": (family_citation,)}
+    )
+    family_observations = observations.model_copy(
+        update={
+            "observations": (family_observation,),
+            "selected_attempts": (
+                SelectedExtractionAttempt(
+                    unit_id=_hash("b"),
+                    unit_ordinal=1,
+                    attempt=1,
+                    status="COMPLETED",
+                ),
+            ),
+        }
+    )
+    criterion_result = compact_adjudication_attempts(
+        plan,
+        [
+            _model_attempt(plan),
+            deterministic_empty_attempt(
+                plan,
+                plan.packets[1],
+                attempt=1,
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+    catalog = freeze_criterion_catalog(
+        [
+            {
+                "criterion_key": "attorney_client_privilege",
+                "display_label": "Attorney-client privilege",
+                "instruction_text": "Identify confidential requests for legal advice.",
+            },
+            {
+                "criterion_key": "work_product",
+                "display_label": "Work product",
+                "instruction_text": "Identify material prepared in anticipation of litigation.",
+            },
+        ]
+    )
+    criterion_artifact = _artifact_reference(
+        ArtifactType.ANALYSIS_CRITERION_DECISIONS,
+        artifact_id=351,
+    )
+    document_result = build_document_decision_result(
+        plan,
+        criterion_result,
+        criterion_decisions_artifact=criterion_artifact,
+        catalog=catalog,
+    )
+    family_plan = _evaluation_plan(plan, family_observations)
+    family_plan.extraction_units[0].segments[0].paragraph_id = family_citation
+
+    result = build_evidence_compatibility_projection(
+        plan=family_plan,
+        observations=family_observations,
+        observations_artifact=_artifact_reference(
+            ArtifactType.ANALYSIS_OBSERVATIONS,
+            artifact_id=350,
+        ),
+        criterion_decisions=criterion_result,
+        criterion_decisions_artifact=criterion_artifact,
+        document_decision=document_result,
+        document_decision_artifact=_artifact_reference(
+            ArtifactType.ANALYSIS_DOCUMENT_DECISION,
+            artifact_id=352,
+        ),
+        catalog=catalog,
+    )
+
+    assert result.status == "COMPLETED"
+    assert result.output is not None
+    assert result.output["summary"][0]["citation_ids"] == [family_citation]
+    assert result.output["coverage"]["analyzed_paragraph_ids"] == [family_citation]
+
+
 def test_compatibility_projection_blocks_unsupported_decision_semantics() -> None:
     plan, observations = _plan(second_semantics="CONTEXTUAL")
     now = datetime(2026, 11, 15, tzinfo=timezone.utc)
@@ -662,6 +815,90 @@ def test_compatibility_result_artifact_is_bounded_json() -> None:
         "application/json"
     }
     assert workflow_artifact_max_bytes(ArtifactType.ANALYSIS_NARRATIVE_PROJECTION) > 0
+
+
+def test_compatibility_artifact_reuses_identical_prior_producer(monkeypatch) -> None:
+    plan, observations = _plan()
+    criterion_result = compact_adjudication_attempts(
+        plan,
+        [
+            _model_attempt(plan),
+            deterministic_empty_attempt(
+                plan,
+                plan.packets[1],
+                attempt=1,
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+    catalog = freeze_criterion_catalog(
+        [
+            {
+                "criterion_key": "attorney_client_privilege",
+                "display_label": "Attorney-client privilege",
+                "instruction_text": "Identify confidential requests for legal advice.",
+            },
+            {
+                "criterion_key": "work_product",
+                "display_label": "Work product",
+                "instruction_text": "Identify material prepared in anticipation of litigation.",
+            },
+        ]
+    )
+    criterion_artifact = _artifact_reference(
+        ArtifactType.ANALYSIS_CRITERION_DECISIONS,
+        artifact_id=361,
+    )
+    document_result = build_document_decision_result(
+        plan,
+        criterion_result,
+        criterion_decisions_artifact=criterion_artifact,
+        catalog=catalog,
+    )
+    result = build_evidence_compatibility_projection(
+        plan=_evaluation_plan(plan, observations),
+        observations=observations,
+        observations_artifact=_artifact_reference(
+            ArtifactType.ANALYSIS_OBSERVATIONS,
+            artifact_id=360,
+        ),
+        criterion_decisions=criterion_result,
+        criterion_decisions_artifact=criterion_artifact,
+        document_decision=document_result,
+        document_decision_artifact=_artifact_reference(
+            ArtifactType.ANALYSIS_DOCUMENT_DECISION,
+            artifact_id=362,
+        ),
+        catalog=catalog,
+    )
+    content = compatibility_projection_bytes(result)
+    existing = replace(
+        _artifact_reference(ArtifactType.ANALYSIS_COMPATIBILITY_RESULT),
+        derivation_key=compatibility_projection_derivation_key(result),
+        content_hash=hashlib.sha256(content).hexdigest(),
+        byte_length=len(content),
+        producer_run_id=uuid.UUID(int=999),
+    )
+    store = MagicMock()
+    monkeypatch.setattr(
+        "app.evidence_compatibility_projection.find_workflow_artifact_reference",
+        lambda **_kwargs: existing,
+    )
+    monkeypatch.setattr(
+        "app.evidence_compatibility_projection.copy_workflow_artifact_content",
+        lambda *, destination, **_kwargs: destination.write(content),
+    )
+    monkeypatch.setattr("app.evidence_compatibility_projection.store_workflow_artifact", store)
+
+    reference, created = store_compatibility_projection_artifact(
+        result,
+        producer_run_id=uuid.UUID(int=1000),
+        actor_user_id=uuid.UUID(int=10),
+    )
+
+    assert reference == existing
+    assert created is False
+    store.assert_not_called()
 
 
 def test_narrative_overlay_can_change_only_presentation_fields() -> None:

@@ -1,8 +1,13 @@
 # Question-answering throttling
 
+The current throttling controls describe the deployed execution model. The broader work for capability-aware window
+sizing, replay measurement, and operator ETA is documented in the
+[Question-Answering Batch Performance Improvement Plan](question-answering-performance-plan.md).
+
 Question-answering (Q&A) runs evaluate each document independently. A 1,000-document review batch therefore
-creates approximately 1,000 provider requests; the review batch is an orchestration unit, not a provider Batch API
-request.
+creates at least approximately 1,000 provider requests; the review batch is an orchestration unit, not a provider
+Batch API request. Inline evidence normally avoids a second request for supported documents, while long JEV documents
+still use one request per planned source window.
 
 ## Controls
 
@@ -10,8 +15,12 @@ Q&A uses two orchestration limits and a separate provider policy:
 
 | Setting | Default | Scope | Purpose |
 | --- | ---: | --- | --- |
-| `QA_BATCH_CONCURRENCY` | `2` | DBOS-global | Limits active Q&A Batch Set coordinators and active child review-batch workflows. Review Programs also use this value for each profile's child-launch window. |
-| `QA_DOCUMENT_CONCURRENCY` | `12` | DBOS-global | Limits document evaluation workflows across every active Q&A batch and provider. |
+| `QA_BATCH_CONCURRENCY` | `2` | DBOS-global per queue | Limits active Q&A coordinators separately in the JEV, OpenAI, and legacy fallback queues. Review Programs also use this value for each profile's child-launch window. |
+| `QA_DOCUMENT_CONCURRENCY` | `12` | Configuration guard / legacy DBOS queue | Caps the sum of configured provider-specific capacities and remains the fallback queue capacity. |
+| `QA_JEV_DOCUMENT_CONCURRENCY` | `8` | DBOS-global | Limits JEV document workflows without occupying OpenAI slots. |
+| `QA_OPENAI_DOCUMENT_CONCURRENCY` | `4` | DBOS-global | Limits OpenAI Decisions document workflows without waiting behind JEV work. |
+| `QA_INLINE_EVIDENCE_ENABLED` | `true` | Q&A document | Combines classification and typed evidence companions in one provider request when the contract is supported. |
+| `QA_INLINE_EVIDENCE_MAX_STATIC_CHARACTERS` | `12000` | Non-windowed providers | Falls back to conditional evidence localization when inline evidence questions would add unsafe static request overhead. JEV filters paragraph choices per source window. |
 | `TYPESAFE_CONCURRENCY` | `4` | Worker process | Limits simultaneous JEV requests in one worker process. |
 | `TYPESAFE_REQUESTS_PER_MINUTE` | `15` | Worker process and model | Sliding-window JEV request limit. |
 | `TYPESAFE_INPUT_TOKENS_PER_MINUTE` | `200000` | Worker process and model | Sliding-window estimated JEV input-token limit. |
@@ -27,14 +36,15 @@ concurrency. Matter Definition assessment settings control only assessment workf
 
 ## Multiple workers
 
-`QA_BATCH_CONCURRENCY` and `QA_DOCUMENT_CONCURRENCY` configure DBOS queues with `global_concurrency`. Workers
-using the same DBOS system database, application, and queue names share those limits. Starting ten workers does
-not multiply the configured Q&A batch or document concurrency by ten.
+The Q&A batch and provider-specific document settings configure DBOS queues with `global_concurrency`. Workers using
+the same DBOS system database, application, and queue names share those limits. Starting ten workers does not multiply
+the configured Q&A batch or document concurrency by ten.
 
 The decision-engine concurrency gates and RPM/TPM limiters are in process memory. Ten worker processes can
 therefore provide up to ten independent provider limiters. Aggregate provider request rates can approach ten times
 the configured per-process RPM/TPM limits when work is distributed across all workers, although the DBOS-global
-`QA_DOCUMENT_CONCURRENCY` limit still caps simultaneous Q&A document workflows.
+sum of `QA_JEV_DOCUMENT_CONCURRENCY` and `QA_OPENAI_DOCUMENT_CONCURRENCY` still caps simultaneous known-provider
+Q&A document workflows.
 
 Production deployments must account for this distinction:
 
@@ -51,7 +61,7 @@ margin.
 ## Effective concurrency
 
 The effective number of provider calls is bounded by every applicable layer. For OpenAI Decisions, it is no more
-than the available share of `QA_DOCUMENT_CONCURRENCY` and `OPENAI_DECISIONS_CONCURRENCY` in the worker that
+than `QA_OPENAI_DOCUMENT_CONCURRENCY` and `OPENAI_DECISIONS_CONCURRENCY` in the worker that
 claimed the document. RPM and estimated-TPM limits may reduce throughput further. JEV follows the corresponding
 TypeSafe limits.
 

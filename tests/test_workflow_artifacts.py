@@ -61,6 +61,12 @@ def content_for(artifact_type: ArtifactType) -> tuple[bytes, str]:
         ArtifactType.ANALYSIS_COMPATIBILITY_RESULT,
         ArtifactType.ANALYSIS_NARRATIVE_PROJECTION,
         ArtifactType.ANALYSIS_OUTCOME_MANIFEST,
+        ArtifactType.IDENTITY_ANALYSIS_RESULT,
+        ArtifactType.IDENTITY_DOMAIN_RECOMMENDATIONS,
+        ArtifactType.PRIVILEGE_IDENTITY_CONTEXT,
+        ArtifactType.PRIVILEGE_REVIEW_POPULATION,
+        ArtifactType.PRIVILEGE_FAMILY_CONTEXT,
+        ArtifactType.PRIVILEGE_EVIDENCE_PACKETS,
     }:
         return json.dumps({"artifact_type": artifact_type.value, "schema_version": 1}).encode(), "application/json"
     return parquet_bytes(artifact_type.value), "application/vnd.apache.parquet"
@@ -181,7 +187,7 @@ def test_all_workflow_artifact_types_are_stored_and_resolved(
             producer_run_id=producer_run_id,
         )
         response = upload_workflow_artifact(client, auth(root_token), metadata, content)
-        assert response.status_code == 201, response.text
+        assert response.status_code == 201, f"{artifact_type.value}: {response.text}"
         result = response.json()
         assert result["created"] is True
         assert result["artifact"]["artifact_type"] == artifact_type.value

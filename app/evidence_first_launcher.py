@@ -45,7 +45,7 @@ from app.evidence_first_shadow import (
     execute_evidence_unit,
 )
 from app.execution_accounting import refresh_workflow_execution_usage
-from app.model_execution import content_hash
+from app.model_execution import content_hash, provider_compatible_model_settings
 from app.models import (
     Matter,
     MatterDefinitionAssessmentRun,
@@ -56,6 +56,10 @@ from app.models import (
     User,
     WorkflowRun,
     WorkflowStepRun,
+)
+from app.privilege_evidence_context import (
+    PRIVILEGE_FAMILY_EVIDENCE_MODE,
+    load_privilege_family_evidence_context,
 )
 from app.provider_schemas import provider_output_schema
 from app.provider_usage import external_model_identity
@@ -69,6 +73,34 @@ EVIDENCE_SHADOW_LAUNCHER_VERSION = "matter-definition-evidence-shadow-launcher-v
 EVIDENCE_SHADOW_TASK_VERSION = "matter-definition:evidence-first-v2"
 MAX_SHADOW_DOCUMENTS = 25
 SourceLoader = Callable[..., PreferredTextSource | None]
+
+
+class EvidenceInputUnavailableError(ValueError):
+    """A deterministic evidence-input failure that retrying cannot repair."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def uses_privilege_family_evidence_context(mode: object) -> bool:
+    if mode == PRIVILEGE_FAMILY_EVIDENCE_MODE:
+        return True
+    if isinstance(mode, str) and mode.startswith("PRIVILEGE_"):
+        raise ValueError(f"Unsupported privilege evidence execution mode: {mode}")
+    return False
+
+
+def frozen_evidence_stage_model(
+    configuration_snapshot: dict[str, Any],
+    *,
+    stage: str,
+) -> str | None:
+    orchestration = configuration_snapshot.get("evidence_first_orchestration")
+    stages = orchestration.get("stages") if isinstance(orchestration, dict) else None
+    frozen_stage = stages.get(stage) if isinstance(stages, dict) else None
+    model = frozen_stage.get("resolved_model") if isinstance(frozen_stage, dict) else None
+    return model if isinstance(model, str) and model.strip() else None
 
 
 @dataclass(frozen=True)
@@ -88,6 +120,7 @@ class PreparedEvidenceShadowLaunch:
     catalog: FrozenCriterionCatalog
     skill_version: SkillDefinitionVersion
     resolved_model: str
+    model_settings: dict[str, Any]
     binding_snapshot: dict[str, dict]
     documents: tuple[PreparedEvidenceShadowDocument, ...]
     launch_key: str
@@ -126,9 +159,16 @@ def shadow_launch_key(
     )
 
 
-def _require_shadow_operator(actor: User | None, *, tenant_id: uuid.UUID) -> User:
+def _require_shadow_operator(
+    actor: User | None,
+    *,
+    tenant_id: uuid.UUID,
+    allow_tenant_member: bool = False,
+) -> User:
     if actor is None or actor.status != "ACTIVE" or actor.tenant.status != "ACTIVE":
         raise PermissionError("Evidence shadow operator is unavailable or inactive")
+    if allow_tenant_member and actor.tenant_id == tenant_id:
+        return actor
     if actor.tenant_role == "ADMIN" and (actor.tenant.is_root or actor.tenant_id == tenant_id):
         return actor
     raise PermissionError("Evidence shadow execution requires a root or owning-tenant administrator")
@@ -159,6 +199,7 @@ def _analysis_role_binding(
     skill_version: SkillDefinitionVersion,
     *,
     resolved_model: str,
+    model_settings: dict[str, Any] | None = None,
 ) -> AnalysisRoleBinding:
     identity = external_model_identity(resolved_model)
     if identity is None:
@@ -174,7 +215,9 @@ def _analysis_role_binding(
         prompt_hash=content_hash(skill_version.instructions),
         application_schema_hash=content_hash(application_schema),
         provider_schema_hash=content_hash(admitted_schema),
-        model_settings_hash=content_hash(skill_version.model_policy),
+        model_settings_hash=content_hash(
+            skill_version.model_policy if model_settings is None else model_settings
+        ),
         capability_profile_hash=content_hash(
             {
                 "provider": provider,
@@ -258,8 +301,11 @@ def prepare_evidence_shadow_launch(
     document_ids: list[uuid.UUID] | tuple[uuid.UUID, ...] | None = None,
     max_documents: int | None = None,
     map_max_characters: int | None = None,
+    extraction_model: str | None = None,
+    extraction_model_settings: dict[str, Any] | None = None,
     settings: Settings | None = None,
     source_loader: SourceLoader = get_preferred_text_source,
+    require_operator_role: bool = True,
 ) -> PreparedEvidenceShadowLaunch:
     selected = validate_shadow_selection(document_ids=document_ids, max_documents=max_documents)
     active_settings = settings or get_settings()
@@ -273,6 +319,7 @@ def prepare_evidence_shadow_launch(
     actor = _require_shadow_operator(
         db.get(User, actor_user_id),
         tenant_id=matter.client.tenant_id,
+        allow_tenant_member=not require_operator_role,
     )
     retrieval_plan = assessment.configuration_snapshot.get("retrieval_plan")
     if not isinstance(retrieval_plan, dict):
@@ -284,8 +331,29 @@ def prepare_evidence_shadow_launch(
         tenant_id=matter.client.tenant_id,
     )
     _binding, _definition, skill_version = resolved["evidence_extraction"]
-    resolved_model = resolve_agent_model(skill_version.model_key, active_settings)
-    role_binding = _analysis_role_binding(skill_version, resolved_model=resolved_model)
+    frozen_model = frozen_evidence_stage_model(
+        assessment.configuration_snapshot,
+        stage="EXTRACTION",
+    )
+    resolved_model = (
+        extraction_model
+        or frozen_model
+        or resolve_agent_model(skill_version.model_key, active_settings)
+    )
+    requested_model_settings = (
+        dict(skill_version.model_policy)
+        if extraction_model_settings is None
+        else dict(extraction_model_settings)
+    )
+    model_settings = provider_compatible_model_settings(
+        requested_model_settings,
+        resolved_model=resolved_model,
+    )
+    role_binding = _analysis_role_binding(
+        skill_version,
+        resolved_model=resolved_model,
+        model_settings=model_settings,
+    )
     selected_ids = _selected_document_ids(
         db,
         assessment,
@@ -295,39 +363,78 @@ def prepare_evidence_shadow_launch(
     if not selected_ids:
         raise ValueError("Assessment batch does not contain any selected documents")
     maximum = map_max_characters or active_settings.definition_assessment_map_max_characters
+    documents = {
+        document.id: document
+        for document in db.scalars(select(MatterDocument).where(MatterDocument.id.in_(selected_ids)))
+    }
+    tenant_id = matter.client.tenant_id
+    client_id = matter.client_id
+    db.commit()
     input_snapshots = get_collection_item_analysis_input_snapshots(
         item_ids=[
             document.collection_item_id
             for document_id in selected_ids
-            if (document := db.get(MatterDocument, document_id)) is not None
+            if (document := documents.get(document_id)) is not None
         ],
         actor_user_id=actor.id,
-        tenant_id=matter.client.tenant_id,
-        client_id=matter.client_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
     )
     prepared: list[PreparedEvidenceShadowDocument] = []
     for document_id in selected_ids:
-        document = db.get(MatterDocument, document_id)
+        document = documents.get(document_id)
         if document is None or document.matter_id != matter.id:
-            raise ValueError(f"Selected Matter document is unavailable: {document_id}")
+            raise EvidenceInputUnavailableError(
+                "DOCUMENT_UNAVAILABLE",
+                f"Selected Matter document is unavailable: {document_id}",
+            )
         source = source_loader(
             collection_item_id=document.collection_item_id,
             actor_user_id=actor.id,
-            tenant_id=matter.client.tenant_id,
-            client_id=matter.client_id,
+            tenant_id=tenant_id,
+            client_id=client_id,
         )
         if source is None:
-            raise ValueError(f"Selected document has no preferred text source: {document_id}")
+            raise EvidenceInputUnavailableError(
+                "NO_PREFERRED_TEXT_SOURCE",
+                f"Selected document has no preferred text source: {document_id}",
+            )
         input_snapshot = input_snapshots.get(document.collection_item_id)
         if input_snapshot is None:
-            raise ValueError(f"Selected document has no frozen analysis metadata: {document_id}")
+            raise EvidenceInputUnavailableError(
+                "ANALYSIS_INPUT_MISSING",
+                f"Selected document has no frozen analysis metadata: {document_id}",
+            )
         if (
             input_snapshot.text_source is None
             or input_snapshot.text_source.artifact_id != source.artifact_id
             or input_snapshot.text_source.content_hash != source.content_hash
         ):
-            raise ValueError(f"Selected document text source does not match its input snapshot: {document_id}")
-        document_context = build_document_evidence_context(input_snapshot)
+            raise EvidenceInputUnavailableError(
+                "TEXT_SOURCE_CHANGED",
+                f"Selected document text source does not match its input snapshot: {document_id}",
+            )
+        assessment_execution_mode = assessment.configuration_snapshot.get(
+            "assessment_execution_mode"
+        )
+        if uses_privilege_family_evidence_context(assessment_execution_mode):
+            packet_reference = assessment.configuration_snapshot.get("privilege_evidence_packets")
+            raw_program_id = assessment.configuration_snapshot.get("privilege_review_program_id")
+            if not isinstance(packet_reference, dict) or raw_program_id is None:
+                raise ValueError("Privilege evidence assessment is missing its frozen family packets")
+            document_context = load_privilege_family_evidence_context(
+                packet_reference=packet_reference,
+                matter_id=matter.id,
+                program_id=uuid.UUID(str(raw_program_id)),
+                target_document_id=document.id,
+                target_collection_item_id=document.collection_item_id,
+                target_snapshot=input_snapshot,
+                actor_user_id=actor.id,
+                tenant_id=tenant_id,
+                client_id=client_id,
+            )
+        else:
+            document_context = build_document_evidence_context(input_snapshot)
         prepared.append(
             PreparedEvidenceShadowDocument(
                 document=document,
@@ -360,6 +467,7 @@ def prepare_evidence_shadow_launch(
         catalog=catalog,
         skill_version=skill_version,
         resolved_model=resolved_model,
+        model_settings=model_settings,
         binding_snapshot=binding_snapshot(resolved),
         documents=tuple(prepared),
         launch_key=launch_key,
@@ -565,6 +673,7 @@ async def execute_prepared_evidence_unit(
         source_content_hash=value.source.content_hash,
         document_context=value.document_context,
         resolved_model=prepared.resolved_model,
+        model_settings=prepared.model_settings,
         # Parallel unit workers must not contend on aggregate workflow totals.
         # The document compaction checkpoint refreshes those totals once.
         refresh_workflow_usage=False,
@@ -620,9 +729,7 @@ def finalize_prepared_evidence_shadow(
     statuses = Counter(item.status for item in outcome.compacted.selected_attempts)
     successful = statuses["COMPLETED"] + statuses["COMPLETED_WITH_ADJUSTMENTS"]
     failed = len(value.plan.extraction_units) - successful
-    observation_counts = Counter(
-        (item.criterion_key, item.signal_type) for item in outcome.compacted.observations
-    )
+    observation_counts = Counter((item.criterion_key, item.signal_type) for item in outcome.compacted.observations)
     executed_unit_count = sum(bool(item.get("executed")) for item in unit_results or [])
     reused_unit_count = sum(bool(item.get("reused")) for item in unit_results or [])
     report = {
@@ -640,8 +747,7 @@ def finalize_prepared_evidence_shadow(
         "material_adjustment_count": outcome.compacted.material_adjustment_count,
         "observation_count": len(outcome.compacted.observations),
         "observation_counts": {
-            f"{criterion}:{signal}": count
-            for (criterion, signal), count in sorted(observation_counts.items())
+            f"{criterion}:{signal}": count for (criterion, signal), count in sorted(observation_counts.items())
         },
         "plan_artifact_id": str(outcome.plan_artifact.artifact_id),
         "observations_artifact_id": str(outcome.observations_artifact.artifact_id),
@@ -749,6 +855,7 @@ async def execute_prepared_evidence_shadow(
                 source_content_hash=value.source.content_hash,
                 document_context=value.document_context,
                 resolved_model=prepared.resolved_model,
+                model_settings=prepared.model_settings,
                 retry_failed=retry_failed,
             )
             statuses = Counter(item.status for item in outcome.compacted.selected_attempts)

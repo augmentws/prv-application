@@ -25,6 +25,8 @@ interface SearchIndexPanelProps {
   retryingFailed: boolean;
   retryableOperationCount?: number;
   retryableDocumentCount?: number;
+  onRetryOperation?: (operationId: string) => Promise<void>;
+  retryingOperationId?: string;
 }
 
 type IndexHealth = "NOT_CREATED" | "BUILDING" | "ACTION_REQUIRED" | "READY" | "BEHIND" | "FAILED" | "MISSING" | "UNAVAILABLE";
@@ -40,14 +42,16 @@ interface RebuildProgress {
   updatedAt?: string;
 }
 
-export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onPromoteGeneration, promotingGeneration, onRetryFailed, retryingFailed, retryableOperationCount, retryableDocumentCount }: SearchIndexPanelProps) {
+export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onPromoteGeneration, promotingGeneration, onRetryFailed, retryingFailed, retryableOperationCount, retryableDocumentCount, onRetryOperation, retryingOperationId }: SearchIndexPanelProps) {
   const activeIndex = indexes.find((index) => index.status === "ACTIVE");
   const promotableIndex = indexes.find((index) => index.status === "READY_WITH_ERRORS");
   const latestIndex = indexes[0];
   const activeOperation = operations.find((operation) => operation.status === "QUEUED" || operation.status === "RUNNING");
   const awaitingOperation = operations.find((operation) => operation.status === "AWAITING_USER");
   const latestStructuralOperation = operations.find((operation) => operation.kind === "REBUILD" || operation.kind === "SCHEMA_SYNC");
-  const failedOperations = operations.filter((operation) => operation.status === "FAILED");
+  const failedOperations = operations.filter(
+    (operation) => operation.status === "FAILED" && !isOperatorCanceled(operation),
+  );
   const failedDocumentUpserts = failedOperations.filter((operation) => operation.kind === "DOCUMENT_UPSERT");
   const failedDocumentCount = failedDocumentUpserts.reduce((count, operation) => {
     const documentIds = operation.payload.document_ids;
@@ -158,9 +162,9 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
         <div className="mb-3"><h3 id="operation-history-heading" className="font-semibold">Recent operations</h3><p className="mt-1 text-sm text-muted-foreground">Asynchronous schema, rebuild, and document projection work.</p></div>
         <Card className="overflow-hidden">
           <Table>
-            <TableHeader><TableRow><TableHead>Operation</TableHead><TableHead>Status</TableHead><TableHead>Attempts</TableHead><TableHead>Created</TableHead><TableHead>Details</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Operation</TableHead><TableHead>Status</TableHead><TableHead>Attempts</TableHead><TableHead>Created</TableHead><TableHead>Details</TableHead><TableHead className="text-right">Action</TableHead></TableRow></TableHeader>
             <TableBody>
-              {operations.length ? operations.slice(0, 10).map((operation) => <TableRow key={operation.id}><TableCell className="font-semibold">{operationLabel(operation)}</TableCell><TableCell><OperationStatusBadge status={operation.status} /></TableCell><TableCell className="tabular-nums">{operation.attempt_count.toLocaleString()}</TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(operation.created_at)}</TableCell><TableCell className="max-w-sm text-sm text-muted-foreground">{operationDetails(operation)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search operations have been recorded.</TableCell></TableRow>}
+              {operations.length ? operations.slice(0, 10).map((operation) => <TableRow key={operation.id}><TableCell className="font-semibold">{operationLabel(operation)}</TableCell><TableCell>{isOperatorCanceled(operation) ? <Badge variant="outline">Canceled</Badge> : <OperationStatusBadge status={operation.status} />}</TableCell><TableCell className="tabular-nums">{operation.attempt_count.toLocaleString()}</TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(operation.created_at)}</TableCell><TableCell className="max-w-sm text-sm text-muted-foreground">{operationDetails(operation)}</TableCell><TableCell className="text-right">{operation.kind === "DOCUMENT_UPSERT" && operation.status === "FAILED" && !isOperatorCanceled(operation) && onRetryOperation ? <Button type="button" size="sm" variant="outline" disabled={Boolean(retryingOperationId)} onClick={() => void onRetryOperation(operation.id)}>{retryingOperationId === operation.id ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}Retry</Button> : "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No search operations have been recorded.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </Card>
@@ -405,6 +409,10 @@ function operationDetails(operation: SearchProjectionOperationRead) {
     return `${progress.processedDocuments.toLocaleString()} / ${progress.totalDocuments.toLocaleString()} documents`;
   }
   return operation.completed_at ? `Completed ${formatDate(operation.completed_at)}` : "—";
+}
+
+function isOperatorCanceled(operation: SearchProjectionOperationRead) {
+  return operation.payload.operator_canceled === true;
 }
 
 function parseRebuildProgress(value: unknown): RebuildProgress | undefined {

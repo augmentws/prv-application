@@ -9,4 +9,5 @@
 export interface CollectionItemIdentity {
   item_id: string;
   source_item_id: string;
+  family_id: string | null;
 }

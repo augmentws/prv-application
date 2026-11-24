@@ -449,7 +449,10 @@ class WorkflowArtifact(ArtifactBase):
             "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
             "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT', "
             "'JOB_ITEM_OUTCOME_FRAGMENT', 'JOB_ITEM_OUTCOMES', 'FACT_EXPORT', "
-            "'REVIEW_PROGRAM_COMPLETION_REPORT')",
+            "'REVIEW_PROGRAM_COMPLETION_REPORT', 'CODING_COMPARISON_POPULATION', "
+            "'CODING_COMPARISON_RESULT', 'IDENTITY_ANALYSIS_RESULT', 'IDENTITY_DOMAIN_RECOMMENDATIONS', "
+            "'PRIVILEGE_IDENTITY_CONTEXT', 'PRIVILEGE_REVIEW_POPULATION', "
+            "'PRIVILEGE_FAMILY_CONTEXT', 'PRIVILEGE_EVIDENCE_PACKETS')",
             name="ck_workflow_artifact_type",
         ),
         CheckConstraint("schema_version > 0", name="ck_workflow_artifact_schema_version"),

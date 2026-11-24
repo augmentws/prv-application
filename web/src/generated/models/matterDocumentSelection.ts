@@ -11,6 +11,7 @@ import type { MatterDocumentSelectionRecordTypesItem } from './matterDocumentSel
 
 export interface MatterDocumentSelection {
   mode?: MatterDocumentSelectionMode;
+  include_complete_families?: boolean;
   q?: string | null;
   /** @maxItems 1000 */
   custodian_ids?: string[];

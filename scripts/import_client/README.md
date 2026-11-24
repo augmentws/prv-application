@@ -168,8 +168,10 @@ authenticated as the user who should own the gold reviewer coding. For Topic
 304, `1` becomes `true` and `0` becomes `false`; `-1` and `-2` rows are not
 coded.
 
-Create the Topic 304 evaluation publication with every assessed document and
-10,000 reproducibly sampled documents that have no `0` or `1` Topic 304 coding:
+Create the Topic 304 evaluation publication by expanding every assessed
+document to its complete family, then adding approximately 10,000 documents
+from reproducibly sampled whole families that contain no `0` or `1` Topic 304
+coding:
 
 ```bash
 pipenv run python -m scripts.trec_matter_publish \
@@ -185,11 +187,15 @@ pipenv run python -m scripts.trec_matter_publish \
 
 The dry run reads the collection, creates the complete audit manifest, and does
 not create an import job. Review its counts, then remove `--dry-run` to submit
-one exact matter document import. The script ranks otherwise uncoded documents
-by SHA-256 of the seed and source document ID, so the same collection, Qrels,
-and seed always produce the same sample. Rows coded `0` and `1` are both in the
-coded set; `-1`, `-2`, and documents absent from the Qrels are eligible for the
-uncoded sample. Families are not expanded.
+one exact matter document import. The script ranks otherwise uncoded families
+by SHA-256 of the seed and family key, then adds complete families until it
+reaches the requested document target. The result may be slightly larger than
+`--uncoded-count` because a family is never split. The same collection, Qrels,
+and seed therefore produce the same sample. Rows coded `0` and `1` are coded
+seeds; their complete families are included before sampling. Families
+containing any coded seed are excluded from the uncoded sample. Rows coded
+`-1`, `-2`, and documents absent from the Qrels remain eligible when their
+family has no `0` or `1` seed.
 
 Validate the Topic 304 coding against the ready batch without changing reviewer
 coding:

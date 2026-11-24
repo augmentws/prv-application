@@ -138,6 +138,34 @@ def _gemini_schema(
     return transformed or _unconstrained_json_value_schema()
 
 
+def _openai_strict_schema(value: Any) -> Any:
+    """Return an OpenAI strict-structured-output copy of a JSON schema.
+
+    OpenAI requires every property declared on an object to also appear in
+    ``required`` and requires closed objects.  The application schema remains
+    unchanged and is still the authority used to validate the returned value;
+    this transformation only controls the shape admitted at the provider
+    boundary.
+    """
+
+    if isinstance(value, list):
+        return [_openai_strict_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    transformed = {key: _openai_strict_schema(item) for key, item in value.items()}
+    properties = transformed.get("properties")
+    if isinstance(properties, dict):
+        additional_properties = value.get("additionalProperties")
+        if additional_properties not in (None, False):
+            raise ValueError(
+                "OpenAI strict structured output cannot preserve an object that allows additional properties"
+            )
+        transformed["required"] = list(properties)
+        transformed["additionalProperties"] = False
+    return transformed
+
+
 def provider_output_schema(
     schema: dict[str, Any],
     *,
@@ -146,10 +174,12 @@ def provider_output_schema(
     include_additional_properties: bool = True,
 ) -> dict[str, Any]:
     """Return the provider-admission schema; callers still validate against the full stored schema."""
-    if provider != "google":
-        return schema
     admitted = _inline_local_references(schema, root=schema) if inline_references else schema
-    return _gemini_schema(
-        admitted,
-        include_additional_properties=include_additional_properties,
-    )
+    if provider == "google":
+        return _gemini_schema(
+            admitted,
+            include_additional_properties=include_additional_properties,
+        )
+    if provider == "openai":
+        return _openai_strict_schema(admitted)
+    return admitted

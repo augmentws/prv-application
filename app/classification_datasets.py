@@ -88,7 +88,9 @@ AUTHORITY_RANK = {
 
 
 class ClassificationDatasetError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "CLASSIFICATION_DATASET_INVALID") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ClassificationDatasetNotFoundError(ClassificationDatasetError):
@@ -188,11 +190,7 @@ def _timestamp_text(value: datetime | None) -> str | None:
 
 
 def _metadata(values: dict[str, Any]) -> dict[bytes, bytes]:
-    return {
-        f"pvr.{key}".encode(): str(value).encode()
-        for key, value in sorted(values.items())
-        if value is not None
-    }
+    return {f"pvr.{key}".encode(): str(value).encode() for key, value in sorted(values.items()) if value is not None}
 
 
 def _classification_input_contract(*, configuration_hash: str) -> AnalysisInputContract:
@@ -284,9 +282,7 @@ def _write_label_parquet(
                 "one_vs_rest_observed_mask": list(row.one_vs_rest_observed_mask),
                 "class_keys": list(row.class_keys),
                 "source_kind": row.source_kind,
-                "source_reference_id": (
-                    str(row.source_reference_id) if row.source_reference_id else None
-                ),
+                "source_reference_id": (str(row.source_reference_id) if row.source_reference_id else None),
                 "authority": row.authority,
                 "source_record_ids": list(row.source_record_ids),
                 "label_timestamp": _timestamp_text(row.label_timestamp),
@@ -345,9 +341,7 @@ def _scope_documents(
             )
             return []
         documents = db.scalars(
-            select(MatterDocument)
-            .where(MatterDocument.matter_id == matter.id)
-            .order_by(MatterDocument.id)
+            select(MatterDocument).where(MatterDocument.matter_id == matter.id).order_by(MatterDocument.id)
         ).all()
         return [(document, index) for index, document in enumerate(documents, start=1)]
 
@@ -383,7 +377,7 @@ def _scope_documents(
             ReviewBatchDocument.review_batch_id == batch.id,
             MatterDocument.matter_id == matter.id,
         )
-        .order_by(MatterDocument.id)
+        .order_by(ReviewBatchDocument.sequence_number, MatterDocument.id)
     ).all()
     if len(rows) != batch.document_count:
         _append_issue(
@@ -405,16 +399,16 @@ def _population_rows(
             collection_item_id=document.collection_item_id,
             source_collection_id=document.source_collection_id,
             scope_ordinal=scope_ordinal,
-            family_id=(grouping[document.collection_item_id].family_id if document.collection_item_id in grouping else None),
+            family_id=(
+                grouping[document.collection_item_id].family_id if document.collection_item_id in grouping else None
+            ),
             exact_duplicate_group_id=(
                 grouping[document.collection_item_id].native_content_hash
                 if document.collection_item_id in grouping
                 else None
             ),
             record_type=(
-                grouping[document.collection_item_id].record_type
-                if document.collection_item_id in grouping
-                else None
+                grouping[document.collection_item_id].record_type if document.collection_item_id in grouping else None
             ),
         )
         for document, scope_ordinal in documents
@@ -447,15 +441,7 @@ def _observed_class_keys(
         configured = configured.get(str(target.metadata_definition_id), configured.get(target.stable_key))
     if not isinstance(configured, list):
         return None
-    return tuple(
-        sorted(
-            {
-                projected
-                for value in configured
-                if (projected := _target_value(value, target)) is not None
-            }
-        )
-    )
+    return tuple(sorted({projected for value in configured if (projected := _target_value(value, target)) is not None}))
 
 
 def _run_is_blinded(run: ReviewBatchRun) -> bool:
@@ -558,10 +544,7 @@ def _validate_reviewer_source(
         _append_issue(
             blocking_errors,
             code="LABEL_SOURCE_REVISION_NOT_FOUND",
-            message=(
-                f"Reviewer source {coding.id} does not contain revision "
-                f"{source.source_revision}"
-            ),
+            message=(f"Reviewer source {coding.id} does not contain revision {source.source_revision}"),
         )
         return None
     return coding
@@ -612,13 +595,7 @@ def _matter_claim(
 ) -> LabelClaim:
     usable = [row for row in values if row.resolution_state == "VALUE"]
     raw_values = tuple(
-        sorted(
-            {
-                value
-                for row in usable
-                if (value := _target_value(event_value(row), target)) is not None
-            }
-        )
+        sorted({value for row in usable if (value := _target_value(event_value(row), target)) is not None})
     )
     provenance = sorted(
         {
@@ -691,17 +668,10 @@ def _run_claims(
     claims: dict[uuid.UUID, LabelClaim] = {}
     for document_id, values in grouped.items():
         raw_values = tuple(
-            sorted(
-                {
-                    value
-                    for row in values
-                    if (value := _target_value(event_value(row), target)) is not None
-                }
-            )
+            sorted({value for row in values if (value := _target_value(event_value(row), target)) is not None})
         )
         record_ids = tuple(
-            f"{run.id}:{document_id}:{target.metadata_definition_id}:{row.value_ordinal}"
-            for row in values
+            f"{run.id}:{document_id}:{target.metadata_definition_id}:{row.value_ordinal}" for row in values
         )
         claims[document_id] = LabelClaim(
             policy_index=policy_index,
@@ -734,9 +704,7 @@ def _reviewer_claims(
         document_ids=document_ids,
         metadata_definition_ids=[target.metadata_definition_id],
     )
-    completed_document_ids = {
-        row.matter_document_id for row in resolved.documents if row.status == "COMPLETED"
-    }
+    completed_document_ids = {row.matter_document_id for row in resolved.documents if row.status == "COMPLETED"}
     grouped: dict[uuid.UUID, list[Any]] = defaultdict(list)
     for row in resolved.values:
         if row.matter_document_id in completed_document_ids:
@@ -756,13 +724,7 @@ def _reviewer_claims(
     claims: dict[uuid.UUID, LabelClaim] = {}
     for document_id, values in grouped.items():
         raw_values = tuple(
-            sorted(
-                {
-                    value
-                    for row in values
-                    if (value := _target_value(event_value(row), target)) is not None
-                }
-            )
+            sorted({value for row in values if (value := _target_value(event_value(row), target)) is not None})
         )
         claims[document_id] = LabelClaim(
             policy_index=policy_index,
@@ -896,9 +858,7 @@ def _claims_json(claims: list[LabelClaim]) -> str:
                 "policy_index": claim.policy_index,
                 "source_kind": claim.source.kind.value,
                 "source_reference_id": (
-                    str(claim.source.source_reference_id)
-                    if claim.source.source_reference_id
-                    else None
+                    str(claim.source.source_reference_id) if claim.source.source_reference_id else None
                 ),
                 "authority": claim.source.authority.value,
                 "source_weight": claim.source.source_weight,
@@ -906,9 +866,7 @@ def _claims_json(claims: list[LabelClaim]) -> str:
                 "source_record_ids": list(claim.source_record_ids),
                 "label_timestamp": _timestamp_text(claim.label_timestamp),
                 "observed_class_keys": (
-                    list(claim.observed_class_keys)
-                    if claim.observed_class_keys is not None
-                    else None
+                    list(claim.observed_class_keys) if claim.observed_class_keys is not None else None
                 ),
                 "target_conflict": claim.target_conflict,
             }
@@ -990,11 +948,7 @@ def _resolve_labels(
                 )
                 for claim in authoritative
             ]
-            invalid_shapes = [
-                (claim, reason)
-                for claim, signature, reason in shaped
-                if signature is None
-            ]
+            invalid_shapes = [(claim, reason) for claim, signature, reason in shaped if signature is None]
             if invalid_shapes:
                 target_conflicts += 1
                 invalid_claim, invalid_reason = invalid_shapes[0]
@@ -1080,12 +1034,24 @@ def _resolve_labels(
             message="Binary training requires exactly two discovered classes",
             count=len(class_keys),
         )
+    elif strategy == ClassificationStrategy.BINARY and not binary_mapping:
+        # Dynamic binary configurations discover their two target values from
+        # the frozen claims. Shape those claims with the same deterministic
+        # mapping later used by the training and scoring contracts.
+        binary_mapping = {
+            "negative_class_key": class_keys[0],
+            "positive_class_key": class_keys[1],
+            "negative_value_keys": [class_keys[0]],
+            "positive_value_keys": [class_keys[1]],
+        }
 
     for document_id in document_ids:
         selected_claim, claims, status, reason = selections[document_id]
         if status is not None or selected_claim is None:
-            raw_values = selected_claim.raw_value_keys if selected_claim is not None else tuple(
-                sorted({value for claim in claims for value in claim.raw_value_keys})
+            raw_values = (
+                selected_claim.raw_value_keys
+                if selected_claim is not None
+                else tuple(sorted({value for claim in claims for value in claim.raw_value_keys}))
             )
             resolved.append(
                 _unresolved_label(
@@ -1181,9 +1147,7 @@ def _resolve_labels(
         _append_issue(
             warnings,
             code="SOURCE_CONFLICTS_INTERSECTED",
-            message=(
-                "Multi-value source disagreements were resolved to values selected by every authoritative source"
-            ),
+            message=("Multi-value source disagreements were resolved to values selected by every authoritative source"),
             count=intersected_source_conflicts,
         )
     return resolved, list(class_keys)
@@ -1222,25 +1186,38 @@ def target_distribution(
     definition_id: uuid.UUID,
     training_scope: TrainingScopeSpecification,
     hierarchy_level: int | None = None,
+    label_source: LabelSourceSpecification | None = None,
 ) -> ClassificationTargetDistributionRead:
     definition = eligible_target_definition(
         db,
         matter=matter,
         definition_id=definition_id,
     )
+    source = label_source or LabelSourceSpecification(
+        kind=LabelSourceKind.MATTER_ASSERTED,
+        authority=LabelAuthority.SILVER,
+        source_weight=1.0,
+    )
+    needs_document_ids = source.kind in {
+        LabelSourceKind.HUMAN_REVIEW,
+        LabelSourceKind.ADJUDICATED_REVIEW,
+    }
+    document_ids: list[uuid.UUID] | None = None
     if training_scope.scope_type == TrainingScopeType.MATTER:
         if training_scope.scope_id != matter.id:
-            raise ClassificationDatasetConflictError(
-                "Matter scope ID must equal the model's matter ID"
+            raise ClassificationDatasetConflictError("Matter scope ID must equal the model's matter ID")
+        if needs_document_ids:
+            document_ids = list(
+                db.scalars(
+                    select(MatterDocument.id).where(MatterDocument.matter_id == matter.id).order_by(MatterDocument.id)
+                )
             )
-        population_count = int(
-            db.scalar(
-                select(func.count())
-                .select_from(MatterDocument)
-                .where(MatterDocument.matter_id == matter.id)
+            population_count = len(document_ids)
+        else:
+            population_count = int(
+                db.scalar(select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id))
+                or 0
             )
-            or 0
-        )
         current_values = (
             select(DocumentMetadataCurrent)
             .where(
@@ -1257,28 +1234,25 @@ def target_distribution(
         if batch is None:
             raise ClassificationDatasetConflictError("Training review batch was not found")
         if batch.matter_id != matter.id:
-            raise ClassificationDatasetConflictError(
-                "Training review batch does not belong to the model's matter"
-            )
+            raise ClassificationDatasetConflictError("Training review batch does not belong to the model's matter")
         if batch.status != "READY":
-            raise ClassificationDatasetConflictError(
-                "Training review batch must be ready before it can be used"
+            raise ClassificationDatasetConflictError("Training review batch must be ready before it can be used")
+        scope_document_ids = (
+            select(ReviewBatchDocument.matter_document_id)
+            .join(
+                MatterDocument,
+                MatterDocument.id == ReviewBatchDocument.matter_document_id,
             )
-        population_count = int(
-            db.scalar(
-                select(func.count())
-                .select_from(ReviewBatchDocument)
-                .join(
-                    MatterDocument,
-                    MatterDocument.id == ReviewBatchDocument.matter_document_id,
-                )
-                .where(
-                    ReviewBatchDocument.review_batch_id == batch.id,
-                    MatterDocument.matter_id == matter.id,
-                )
+            .where(
+                ReviewBatchDocument.review_batch_id == batch.id,
+                MatterDocument.matter_id == matter.id,
             )
-            or 0
         )
+        if needs_document_ids:
+            document_ids = list(db.scalars(scope_document_ids.order_by(ReviewBatchDocument.sequence_number)))
+            population_count = len(document_ids)
+        else:
+            population_count = int(db.scalar(select(func.count()).select_from(scope_document_ids.subquery())) or 0)
         if population_count != batch.document_count:
             raise ClassificationDatasetConflictError(
                 "Ready review-batch membership does not match its recorded document count"
@@ -1287,8 +1261,7 @@ def target_distribution(
             select(DocumentMetadataCurrent)
             .join(
                 ReviewBatchDocument,
-                ReviewBatchDocument.matter_document_id
-                == DocumentMetadataCurrent.matter_document_id,
+                ReviewBatchDocument.matter_document_id == DocumentMetadataCurrent.matter_document_id,
             )
             .where(
                 ReviewBatchDocument.review_batch_id == batch.id,
@@ -1308,14 +1281,41 @@ def target_distribution(
         )
     except ValidationError as exc:
         raise ClassificationDatasetConflictError(str(exc)) from exc
-    source = LabelSourceSpecification(
-        kind=LabelSourceKind.MATTER_ASSERTED,
-        authority=LabelAuthority.SILVER,
-        source_weight=1.0,
-    )
     counts: Counter[str] = Counter()
     labeled_count = 0
     conflicting_count = 0
+
+    if source.kind in {LabelSourceKind.HUMAN_REVIEW, LabelSourceKind.ADJUDICATED_REVIEW}:
+        blocking_errors: list[ClassificationDatasetIssue] = []
+        coding = _validate_reviewer_source(
+            db,
+            matter=matter,
+            source=source,
+            blocking_errors=blocking_errors,
+        )
+        if coding is None:
+            message = blocking_errors[0].message if blocking_errors else "Reviewer coding source was not found"
+            raise ClassificationDatasetConflictError(message)
+        claims = _reviewer_claims(
+            db,
+            coding=coding,
+            document_ids=document_ids or [],
+            target=target,
+            policy_index=0,
+            source=source.model_copy(update={"source_revision": source.source_revision or coding.revision}),
+        )
+        for claim in claims.values():
+            if not claim.raw_value_keys:
+                continue
+            if claim.target_conflict:
+                conflicting_count += 1
+                continue
+            labeled_count += 1
+            counts.update(set(claim.raw_value_keys))
+    elif source.kind != LabelSourceKind.MATTER_ASSERTED:
+        raise ClassificationDatasetConflictError(
+            "The distribution preview supports current matter coding or pinned reviewer coding"
+        )
 
     def count_values(document_id: uuid.UUID, values: list[DocumentMetadataCurrent]) -> None:
         nonlocal conflicting_count, labeled_count
@@ -1334,16 +1334,19 @@ def target_distribution(
         labeled_count += 1
         counts.update(set(claim.raw_value_keys))
 
-    current_document_id: uuid.UUID | None = None
-    document_values: list[DocumentMetadataCurrent] = []
-    for current in db.scalars(current_values).yield_per(5_000):
-        if current_document_id is not None and current.matter_document_id != current_document_id:
+    if source.kind == LabelSourceKind.MATTER_ASSERTED:
+        if source.source_reference_id is not None:
+            raise ClassificationDatasetConflictError("Current matter coding must not specify a source reference")
+        current_document_id: uuid.UUID | None = None
+        document_values: list[DocumentMetadataCurrent] = []
+        for current in db.scalars(current_values).yield_per(5_000):
+            if current_document_id is not None and current.matter_document_id != current_document_id:
+                count_values(current_document_id, document_values)
+                document_values = []
+            current_document_id = current.matter_document_id
+            document_values.append(current)
+        if current_document_id is not None:
             count_values(current_document_id, document_values)
-            document_values = []
-        current_document_id = current.matter_document_id
-        document_values.append(current)
-    if current_document_id is not None:
-        count_values(current_document_id, document_values)
 
     configured_keys = (
         ["false", "true"]
@@ -1353,10 +1356,7 @@ def target_distribution(
         else []
     )
     class_keys = [*configured_keys, *sorted(set(counts) - set(configured_keys))]
-    labels = {
-        str(value["key"]): str(value.get("label") or value["key"])
-        for value in definition.allowed_values or []
-    }
+    labels = {str(value["key"]): str(value.get("label") or value["key"]) for value in definition.allowed_values or []}
     if definition.type == "BOOLEAN":
         labels.update({"false": "False", "true": "True"})
     return ClassificationTargetDistributionRead(
@@ -1414,8 +1414,7 @@ def prepare_dataset_snapshot(
             blocking_errors,
             code="TARGET_FIELD_NOT_ELIGIBLE",
             message=(
-                "The configured target field must remain an active Boolean, enum, text, "
-                "or long-text coding field"
+                "The configured target field must remain an active Boolean, enum, text, or long-text coding field"
             ),
         )
     if target.schema_fingerprint != target_schema_fingerprint(definition):
@@ -1449,18 +1448,14 @@ def prepare_dataset_snapshot(
         raise ClassificationDatasetConflictError(str(exc)) from exc
     population_rows = _population_rows(documents, grouping=grouping)
     missing_grouping_count = sum(
-        row.collection_item_id not in grouping or row.exact_duplicate_group_id is None
-        for row in population_rows
+        row.collection_item_id not in grouping or row.exact_duplicate_group_id is None for row in population_rows
     )
     family_grouped_count = sum(row.family_id is not None for row in population_rows)
     duplicate_counts = Counter(
-        row.exact_duplicate_group_id
-        for row in population_rows
-        if row.exact_duplicate_group_id is not None
+        row.exact_duplicate_group_id for row in population_rows if row.exact_duplicate_group_id is not None
     )
     exact_duplicate_grouped_count = sum(
-        row.exact_duplicate_group_id is not None
-        and duplicate_counts[row.exact_duplicate_group_id] > 1
+        row.exact_duplicate_group_id is not None and duplicate_counts[row.exact_duplicate_group_id] > 1
         for row in population_rows
     )
     if missing_grouping_count:
@@ -1622,9 +1617,7 @@ def prepare_dataset_snapshot(
         blocking_errors=blocking_errors,
         warnings=warnings,
     )
-    summary_lookup = {
-        (summary.kind, summary.source_reference_id): summary for summary in summaries
-    }
+    summary_lookup = {(summary.kind, summary.source_reference_id): summary for summary in summaries}
     for row in label_rows:
         if row.resolution_status == "LABELED" and row.source_kind is not None:
             summary = summary_lookup[(row.source_kind, row.source_reference_id)]
@@ -1723,7 +1716,14 @@ def begin_dataset_snapshot(
 ) -> tuple[ClassificationDatasetSnapshot, bool, bool]:
     if prepared.preview.blocking_errors:
         codes = ", ".join(issue.code for issue in prepared.preview.blocking_errors)
-        raise ClassificationDatasetConflictError(f"Dataset snapshot is blocked: {codes}")
+        raise ClassificationDatasetConflictError(
+            f"Dataset snapshot is blocked: {codes}",
+            code=(
+                prepared.preview.blocking_errors[0].code
+                if len(prepared.preview.blocking_errors) == 1
+                else "DATASET_SNAPSHOT_BLOCKED"
+            ),
+        )
     existing = db.scalar(
         select(ClassificationDatasetSnapshot).where(
             ClassificationDatasetSnapshot.classification_model_id == prepared.model.id,

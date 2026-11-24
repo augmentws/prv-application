@@ -121,6 +121,8 @@ def test_upserts_are_queued_only_when_a_document_state_changes(
     fact = _fact(client, ctx, 0)
     upserts = _fact_state_upserts(ctx["matter_id"])
     assert [operation.payload["document_ids"] for operation in upserts] == [[first]]
+    assert upserts[0].payload["projection_scope"] == "MATTER_CODING_FIELDS"
+    assert len(upserts[0].payload["metadata_definition_ids"]) == 1
     assert upserts[0].created_by_user_id is not None
     assert priorities[-1] is None  # Reviewer changes project ahead of agent work.
 

@@ -1347,6 +1347,203 @@ class MatterSearchExportJob(TimestampMixin, Base):
         return self.created_by.email
 
 
+class MatterCodingComparison(TimestampMixin, Base):
+    __tablename__ = "matter_coding_comparison"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_matter_coding_comparison_status",
+        ),
+        CheckConstraint(
+            "population_document_count >= 0 AND compared_document_count >= 0 "
+            "AND compared_document_count <= population_document_count",
+            name="ck_matter_coding_comparison_counts",
+        ),
+        UniqueConstraint(
+            "matter_id",
+            "created_by_user_id",
+            "idempotency_key",
+            name="uq_matter_coding_comparison_idempotency",
+        ),
+        Index("ix_matter_coding_comparison_matter_created", "matter_id", "created_at"),
+        Index("ix_matter_coding_comparison_matter_status", "matter_id", "status", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    configuration_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    current_stage: Mapped[str | None] = mapped_column(String(100))
+    population_document_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    compared_document_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    population_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    population_content_hash: Mapped[str | None] = mapped_column(String(64))
+    population_byte_length: Mapped[int | None] = mapped_column(BigInteger)
+    result_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    result_content_hash: Mapped[str | None] = mapped_column(String(64))
+    result_byte_length: Mapped[int | None] = mapped_column(BigInteger)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    matter: Mapped["Matter"] = relationship()
+    created_by: Mapped["User"] = relationship(foreign_keys=[created_by_user_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+
+class MatterIdentityAnalysis(TimestampMixin, Base):
+    """One manually triggered, matter-wide structured-participant inventory."""
+
+    __tablename__ = "matter_identity_analysis"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_matter_identity_analysis_status",
+        ),
+        CheckConstraint(
+            "total_document_count >= 0 AND processed_document_count >= 0 "
+            "AND processed_document_count <= total_document_count "
+            "AND documents_with_participants_count >= 0 "
+            "AND identity_count >= 0 AND domain_count >= 0 AND invalid_participant_count >= 0",
+            name="ck_matter_identity_analysis_counts",
+        ),
+        Index("ix_matter_identity_analysis_matter_created", "matter_id", "created_at"),
+        Index("ix_matter_identity_analysis_matter_status", "matter_id", "status", "created_at"),
+        Index(
+            "uq_matter_identity_analysis_active",
+            "matter_id",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'RUNNING')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    current_stage: Mapped[str | None] = mapped_column(String(100))
+    total_document_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    processed_document_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    documents_with_participants_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    identity_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    domain_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    invalid_participant_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    result_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    result_content_hash: Mapped[str | None] = mapped_column(String(64))
+    result_byte_length: Mapped[int | None] = mapped_column(BigInteger)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    matter: Mapped["Matter"] = relationship()
+    created_by: Mapped["User"] = relationship(foreign_keys=[created_by_user_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+
+class MatterIdentityRecommendationRun(TimestampMixin, Base):
+    """Durable IA-2 review of one immutable identity inventory."""
+
+    __tablename__ = "matter_identity_recommendation_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_matter_identity_recommendation_status",
+        ),
+        CheckConstraint(
+            "domain_count >= 0 AND processed_domain_count >= 0 "
+            "AND processed_domain_count <= domain_count AND recommendation_count >= 0",
+            name="ck_matter_identity_recommendation_counts",
+        ),
+        Index("ix_matter_identity_recommendation_matter_created", "matter_id", "created_at"),
+        Index(
+            "uq_matter_identity_recommendation_active",
+            "identity_analysis_id",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'RUNNING')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    identity_analysis_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_identity_analysis.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    current_stage: Mapped[str | None] = mapped_column(String(100))
+    domain_count: Mapped[int] = mapped_column(Integer, default=0)
+    processed_domain_count: Mapped[int] = mapped_column(Integer, default=0)
+    recommendation_count: Mapped[int] = mapped_column(Integer, default=0)
+    result_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    result_content_hash: Mapped[str | None] = mapped_column(String(64))
+    result_byte_length: Mapped[int | None] = mapped_column(BigInteger)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    matter: Mapped["Matter"] = relationship()
+    identity_analysis: Mapped["MatterIdentityAnalysis"] = relationship()
+    created_by: Mapped["User"] = relationship(foreign_keys=[created_by_user_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+
 class SearchProjectionOperation(TimestampMixin, Base):
     __tablename__ = "search_projection_operation"
     __table_args__ = (
@@ -1578,8 +1775,9 @@ class ReviewBatch(TimestampMixin, Base):
     __tablename__ = "review_batch"
     __table_args__ = (
         CheckConstraint(
-            "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
-            "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT', "
+            "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'SAVED_SEARCH', 'RANDOM_MATTER', "
+            "'RANDOM_BATCH', 'RANDOM_SAVED_SEARCH', 'COMPOSITE_SAVED_SEARCH', 'RANDOM_ASSESSMENT', "
+            "'DEFINITION_ASSESSMENT', "
             "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT', 'TASK_BATCH_PARTITION', "
             "'EXPLICIT_DOCUMENTS')",
             name="ck_review_batch_selection_type",
@@ -5747,6 +5945,12 @@ class MatterEntity(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("entity_type IN ('PERSON', 'ORGANIZATION')", name="ck_matter_entity_type"),
         CheckConstraint(
+            "organization_category IS NULL OR (entity_type = 'ORGANIZATION' AND organization_category IN "
+            "('LAW_FIRM', 'CORPORATION', 'GOVERNMENT', 'ACCOUNTING_FIRM', 'CONSULTING_FIRM', "
+            "'INSURER', 'EMAIL_PROVIDER', 'OTHER', 'UNKNOWN'))",
+            name="ck_matter_entity_organization_category",
+        ),
+        CheckConstraint(
             "(parent_id IS NULL AND status IN ('PROPOSED', 'CONFIRMED', 'REJECTED')) OR "
             "(parent_id IS NOT NULL AND status IS NULL AND title IS NULL AND organization_id IS NULL "
             "AND custodian_id IS NULL)",
@@ -5774,6 +5978,7 @@ class MatterEntity(TimestampMixin, Base):
         ),
         Index("ix_matter_entity_matter_name", "matter_id", "normalized_name"),
         Index("ix_matter_entity_matter_type_status", "matter_id", "entity_type", "status"),
+        Index("ix_matter_entity_matter_organization_category", "matter_id", "organization_category"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -5782,6 +5987,7 @@ class MatterEntity(TimestampMixin, Base):
         Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     entity_type: Mapped[str] = mapped_column(String(20))
+    organization_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     normalized_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
@@ -5802,6 +6008,132 @@ class MatterEntity(TimestampMixin, Base):
         Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     lock_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class MatterEntityDomain(Base):
+    """One operator-confirmed domain belonging to a matter organization."""
+
+    __tablename__ = "matter_entity_domain"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "normalized_domain", name="uq_matter_entity_domain_matter_domain"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="CASCADE"), index=True
+    )
+    domain: Mapped[str] = mapped_column(String(253))
+    normalized_domain: Mapped[str] = mapped_column(String(253))
+    source_recommendation_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_identity_recommendation_run.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatterEntityRelationship(TimestampMixin, Base):
+    """A matter-specific, provenance-bearing relationship between two canonical entities."""
+
+    __tablename__ = "matter_entity_relationship"
+    __table_args__ = (
+        CheckConstraint("source_entity_id <> target_entity_id", name="ck_matter_entity_relationship_distinct"),
+        CheckConstraint(
+            "status IN ('PROPOSED', 'CONFIRMED', 'REJECTED')",
+            name="ck_matter_entity_relationship_status",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_matter_entity_relationship_confidence",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from",
+            name="ck_matter_entity_relationship_dates",
+        ),
+        CheckConstraint(
+            "(created_by_user_id IS NULL) <> (created_by_workflow_run_id IS NULL)",
+            name="ck_matter_entity_relationship_creator",
+        ),
+        CheckConstraint(
+            "(status = 'PROPOSED' AND decided_by_user_id IS NULL AND decided_at IS NULL) OR "
+            "(status IN ('CONFIRMED', 'REJECTED') AND decided_by_user_id IS NOT NULL AND decided_at IS NOT NULL)",
+            name="ck_matter_entity_relationship_decision",
+        ),
+        CheckConstraint("lock_version > 0", name="ck_matter_entity_relationship_lock_version"),
+        Index(
+            "uq_matter_entity_relationship_active",
+            "matter_id",
+            "source_entity_id",
+            "relationship_type",
+            "target_entity_id",
+            unique=True,
+            postgresql_where=text("status IN ('PROPOSED', 'CONFIRMED')"),
+            sqlite_where=text("status IN ('PROPOSED', 'CONFIRMED')"),
+        ),
+        Index("ix_matter_entity_relationship_source_status", "source_entity_id", "status"),
+        Index("ix_matter_entity_relationship_target_status", "target_entity_id", "status"),
+        Index("ix_matter_entity_relationship_matter_type", "matter_id", "relationship_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    source_entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT")
+    )
+    target_entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT")
+    )
+    relationship_type: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(20))
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_by_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lock_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class MatterIdentityDomainDecision(TimestampMixin, Base):
+    """An operator's decision on one immutable IA-2 domain recommendation."""
+
+    __tablename__ = "matter_identity_domain_decision"
+    __table_args__ = (
+        CheckConstraint("decision IN ('ACCEPTED', 'REJECTED')", name="ck_identity_domain_decision"),
+        CheckConstraint(
+            "(decision = 'ACCEPTED' AND entity_id IS NOT NULL) OR "
+            "(decision = 'REJECTED' AND entity_id IS NULL)",
+            name="ck_identity_domain_decision_entity",
+        ),
+        UniqueConstraint("recommendation_run_id", "domain", name="uq_identity_domain_decision_run_domain"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    recommendation_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_identity_recommendation_run.id", ondelete="CASCADE"), index=True
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    domain: Mapped[str] = mapped_column(String(253))
+    decision: Mapped[str] = mapped_column(String(20))
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True
+    )
+    organization_name: Mapped[str] = mapped_column(String(300))
+    organization_category: Mapped[str] = mapped_column(String(40))
+    decided_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
+    )
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class MatterEntityEvent(Base):

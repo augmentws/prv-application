@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import secrets
 import string
 import tempfile
@@ -8,11 +9,14 @@ from typing import BinaryIO
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from artifact_service.config import ArtifactSettings, get_artifact_settings
 from artifact_service.models import Artifact, ContentBlob, TenantStorage
 from artifact_service.storage import BlobStorage
+
+logger = logging.getLogger(__name__)
 
 
 def build_bucket_name(tenant_slug: str, settings: ArtifactSettings) -> str:
@@ -33,6 +37,7 @@ def ensure_tenant_storage(
 ) -> TenantStorage:
     existing = db.get(TenantStorage, tenant_id)
     if existing is not None:
+        db.commit()
         storage.ensure_bucket(existing.bucket_name)
         return existing
 
@@ -42,6 +47,9 @@ def ensure_tenant_storage(
         bucket_name=build_bucket_name(tenant_slug, settings),
         status="ACTIVE",
     )
+    # Bucket administration is remote I/O. There is no relational work that
+    # needs to remain open while S3 responds.
+    db.commit()
     storage.ensure_bucket(record.bucket_name)
     db.add(record)
     db.flush()
@@ -77,14 +85,13 @@ def get_or_create_blob(
     byte_length: int,
     media_type: str,
 ) -> ContentBlob:
-    existing = db.scalar(
-        select(ContentBlob).where(ContentBlob.tenant_id == tenant_id, ContentBlob.sha256 == sha256)
-    )
+    existing = db.scalar(select(ContentBlob).where(ContentBlob.tenant_id == tenant_id, ContentBlob.sha256 == sha256))
     if existing is not None:
         return existing
 
     blob_id = uuid.uuid4()
     storage_key = f"v1/blobs/{blob_id}"
+    db.commit()
     storage.put_fileobj(tenant_storage.bucket_name, storage_key, staged, media_type)
     blob = ContentBlob(
         id=blob_id,
@@ -95,8 +102,29 @@ def get_or_create_blob(
         byte_length=byte_length,
         media_type=media_type,
     )
-    db.add(blob)
-    db.flush()
+    try:
+        # Concurrent normalization can produce the same content hash for many
+        # documents. Use a savepoint so a uniqueness race rolls back only this
+        # insert, then reuse the blob committed by the winning transaction.
+        with db.begin_nested():
+            db.add(blob)
+            db.flush()
+    except IntegrityError:
+        try:
+            storage.delete(tenant_storage.bucket_name, storage_key)
+        except Exception:
+            logger.warning(
+                "Unable to remove raced blob upload bucket=%s key=%s",
+                tenant_storage.bucket_name,
+                storage_key,
+                exc_info=True,
+            )
+        existing = db.scalar(
+            select(ContentBlob).where(ContentBlob.tenant_id == tenant_id, ContentBlob.sha256 == sha256)
+        )
+        if existing is None:
+            raise
+        return existing
     return blob
 
 

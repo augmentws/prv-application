@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -18,6 +19,17 @@ class Settings(BaseSettings):
     postgres_user: str = Field(default="postgres", min_length=1)
     postgres_password: str = Field(min_length=1)
     postgres_core_database: str = Field(default="pvr-core", min_length=1)
+    database_pool_profile: Literal["api", "worker", "maintenance"] = "api"
+    database_pool_size: int = Field(default=10, ge=1, le=200)
+    database_max_overflow: int = Field(default=2, ge=0, le=400)
+    database_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    database_pool_recycle_seconds: int = Field(default=1800, ge=30, le=86_400)
+    database_statement_timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    database_idle_transaction_timeout_seconds: int = Field(default=30, ge=1, le=3600)
+    database_checkout_warning_seconds: float = Field(default=1.0, gt=0, le=300)
+    database_transaction_warning_seconds: float = Field(default=30.0, gt=0, le=3600)
+    worker_database_concurrency: int = Field(default=10, ge=1, le=200)
+    worker_database_control_reserve: int = Field(default=2, ge=1, le=20)
     # Optional full-URL override, used by the test suite; normally unset.
     database_url_override: str | None = Field(default=None, validation_alias="DATABASE_URL")
     artifact_mode: str = "embedded"
@@ -40,6 +52,9 @@ class Settings(BaseSettings):
     dbos_system_schema: str = "dbos"
     dbos_application_name: str = "priv-view-workflows"
     dbos_application_version: str = "0.1.0"
+    dbos_runtime_system_pool_size: int = Field(default=10, ge=5, le=100)
+    dbos_client_system_pool_size: int = Field(default=5, ge=1, le=100)
+    dbos_system_polling_concurrency: int = Field(default=8, ge=1, le=100)
     matter_import_batch_size: int = Field(default=1000, ge=1, le=10000)
     search_enabled: bool = True
     opensearch_url: str = "http://localhost:9200"
@@ -71,6 +86,7 @@ class Settings(BaseSettings):
     fact_merge_suggestion_threshold: float = Field(default=0.9, gt=0, le=1)
     agent_default_model: str | None = None
     agent_evidence_extraction_model: str = "google:gemini-3.5-flash-lite"
+    agent_privilege_evidence_extraction_model: str | None = None
     agent_criterion_adjudication_model: str = "google:gemini-3.7-flash"
     agent_evidence_narrative_model: str = "google:gemini-3.7-flash"
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
@@ -101,6 +117,14 @@ class Settings(BaseSettings):
     # concurrency and rate limits are applied separately inside each decision engine.
     qa_batch_concurrency: int = Field(default=2, ge=1, le=64)
     qa_document_concurrency: int = Field(default=12, ge=1, le=256)
+    # Keep provider backpressure isolated. A rate-limited Jev evaluation must not
+    # occupy every document slot while an OpenAI Decisions run is ready to proceed.
+    qa_jev_document_concurrency: int = Field(default=8, ge=1, le=256)
+    qa_openai_document_concurrency: int = Field(default=4, ge=1, le=256)
+    # Combine classification and evidence localization whenever the typed request
+    # can represent both. Unsupported contracts fall back to the legacy second pass.
+    qa_inline_evidence_enabled: bool = True
+    qa_inline_evidence_max_static_characters: int = Field(default=12_000, ge=1_000, le=1_000_000)
     typesafe_api_key: str | None = None
     typesafe_base_url: str | None = None
     typesafe_default_model: str = "jev-latest"
@@ -139,9 +163,7 @@ class Settings(BaseSettings):
     definition_assessment_evidence_extraction_concurrency: int = Field(default=8, ge=1, le=32)
     definition_assessment_evidence_adjudication_concurrency: int = Field(default=4, ge=1, le=32)
     definition_assessment_evidence_narrative_concurrency: int = Field(default=4, ge=1, le=32)
-    definition_assessment_evidence_extraction_requests_per_minute: int = Field(
-        default=60, ge=1, le=100_000
-    )
+    definition_assessment_evidence_extraction_requests_per_minute: int = Field(default=60, ge=1, le=100_000)
     definition_assessment_evidence_extraction_input_tokens_per_minute: int = Field(
         default=1_000_000, ge=1, le=1_000_000_000
     )
@@ -179,6 +201,14 @@ class Settings(BaseSettings):
             database=self.postgres_core_database,
         )
 
+    @property
+    def database_application_name(self) -> str:
+        return {
+            "api": "priv-view-core-api",
+            "worker": "priv-view-workflow-worker",
+            "maintenance": "priv-view-maintenance",
+        }[self.database_pool_profile]
+
     @model_validator(mode="after")
     def validate_deployment_secrets(self) -> "Settings":
         reject_development_secrets(
@@ -198,9 +228,20 @@ class Settings(BaseSettings):
         if self.typesafe_retry_base_seconds > self.typesafe_retry_max_seconds:
             raise ValueError("TYPESAFE_RETRY_BASE_SECONDS must not exceed TYPESAFE_RETRY_MAX_SECONDS")
         if self.openai_decisions_retry_base_seconds > self.openai_decisions_retry_max_seconds:
+            raise ValueError("OPENAI_DECISIONS_RETRY_BASE_SECONDS must not exceed OPENAI_DECISIONS_RETRY_MAX_SECONDS")
+        if self.qa_jev_document_concurrency + self.qa_openai_document_concurrency > self.qa_document_concurrency:
             raise ValueError(
-                "OPENAI_DECISIONS_RETRY_BASE_SECONDS must not exceed OPENAI_DECISIONS_RETRY_MAX_SECONDS"
+                "QA_JEV_DOCUMENT_CONCURRENCY + QA_OPENAI_DOCUMENT_CONCURRENCY must not exceed QA_DOCUMENT_CONCURRENCY"
             )
+        if self.database_pool_profile == "worker":
+            if self.database_max_overflow != 0:
+                raise ValueError("Worker database pools must use DATABASE_MAX_OVERFLOW=0")
+            if self.worker_database_concurrency + self.worker_database_control_reserve > self.database_pool_size:
+                raise ValueError(
+                    "WORKER_DATABASE_CONCURRENCY + WORKER_DATABASE_CONTROL_RESERVE must not exceed DATABASE_POOL_SIZE"
+                )
+        if self.dbos_system_polling_concurrency > self.dbos_runtime_system_pool_size:
+            raise ValueError("DBOS_SYSTEM_POLLING_CONCURRENCY must not exceed DBOS_RUNTIME_SYSTEM_POOL_SIZE")
         if self.agent_stream_replay_page_size > self.agent_stream_replay_limit:
             raise ValueError("AGENT_STREAM_REPLAY_PAGE_SIZE must not exceed AGENT_STREAM_REPLAY_LIMIT")
         return self
@@ -209,3 +250,12 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def configure_worker_database_profile() -> None:
+    """Select the worker pool before any module imports ``app.database``."""
+
+    os.environ["DATABASE_POOL_PROFILE"] = "worker"
+    os.environ["DATABASE_POOL_SIZE"] = os.environ.get("WORKER_DATABASE_POOL_SIZE", "12")
+    os.environ["DATABASE_MAX_OVERFLOW"] = "0"
+    get_settings.cache_clear()

@@ -222,6 +222,192 @@ function mockReplayProgramApi() {
 }
 
 describe("ReviewProgramsSection", () => {
+  it("prepares family context from the current Privilege Review version", async () => {
+    navigation.params = new URLSearchParams("program=privilege-program-1");
+    const requests: Array<Record<string, unknown>> = [];
+    const program = {
+      id: "privilege-program-1",
+      tenant_id: "tenant-1",
+      matter_id: "matter-1",
+      template_key: "PRIVILEGE_REVIEW",
+      template_version: 1,
+      template_content_hash: "b".repeat(64),
+      key: "production-privilege-review",
+      name: "Production privilege review",
+      status: "DRAFT",
+      row_version: 1,
+      owner_user_id: "user-1",
+      created_by_user_id: "user-1",
+      created_at: "2026-11-20T12:00:00Z",
+      updated_at: "2026-11-20T12:00:00Z",
+      current_version: {
+        id: "program-version-1",
+        program_id: "privilege-program-1",
+        version: 1,
+        predecessor_version_id: null,
+        template_key: "PRIVILEGE_REVIEW",
+        template_version: 1,
+        template_content_hash: "b".repeat(64),
+        configuration_stage: "PRIVILEGE_FOUNDATION",
+        configuration_snapshot: {
+          privilege_review: {
+            review_population: { document_count: 250 },
+            identity_context: { confirmed_entity_count: 12, confirmed_relationship_count: 2 },
+            target_metadata_definition: { display_name: "Privilege" },
+            family_policy: { keep_families_together: true },
+          },
+        },
+        source_hashes: {},
+        content_hash: "c".repeat(64),
+        created_by_user_id: "user-1",
+        created_at: "2026-11-20T12:00:00Z",
+        published_at: "2026-11-20T12:00:00Z",
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "PRIVILEGE_REVIEW", version: 1, schema_version: 1, content_hash: "b".repeat(64),
+        name: "Privilege Review", description: "Family-aware privilege review", workflow_type: "PRIVILEGE_REVIEW", phases: [], stages: [],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [program] as never;
+      if (path === "/v1/matters/matter-1/review-programs/privilege-program-1/runs") return [] as never;
+      if (path === "/v1/matters/matter-1/review-programs/privilege-program-1/privilege-family-context") {
+        requests.push(JSON.parse(String(options?.body)));
+        return program as never;
+      }
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    renderSection();
+    await userEvent.click(await screen.findByRole("button", { name: "Prepare family context" }));
+
+    await waitFor(() => expect(requests).toEqual([{
+      expected_program_version_id: "program-version-1",
+    }]));
+  });
+
+  it("starts Matter Definition setup after privilege family context is ready", async () => {
+    navigation.params = new URLSearchParams("program=privilege-program-1");
+    const startRequests: Array<Record<string, unknown>> = [];
+    const program = {
+      id: "privilege-program-1",
+      matter_id: "matter-1",
+      template_key: "PRIVILEGE_REVIEW",
+      template_version: 2,
+      name: "Production privilege review",
+      status: "DRAFT",
+      created_at: "2026-11-20T12:00:00Z",
+      current_version: {
+        id: "program-version-2",
+        version: 2,
+        configuration_snapshot: {
+          privilege_review: {
+            review_population: { document_count: 250 },
+            identity_context: { confirmed_entity_count: 12, confirmed_relationship_count: 2 },
+            family_context: {
+              artifact_id: "family-artifact-1",
+              review_unit_count: 220,
+              multi_document_family_count: 20,
+              context_only_member_count: 8,
+              relationship_exception_count: 1,
+            },
+            target_metadata_definition: { display_name: "Privilege" },
+            family_policy: { keep_families_together: true },
+          },
+        },
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "PRIVILEGE_REVIEW", version: 2, schema_version: 1, content_hash: "b".repeat(64),
+        name: "Privilege Review", description: "Family-aware privilege review", workflow_type: "PRIVILEGE_REVIEW",
+        phases: [{ key: "MATTER_DEFINITION", name: "Matter definition", ordinal: 2 }],
+        stages: [
+          { key: "PRIVILEGE_FOUNDATION", name: "Frozen program inputs", phase_key: "FOUNDATION", ordinal: 1, batching_policy: "NONE", requires_human_gate: true },
+          { key: "FAMILY_CONTEXT", name: "Family context", phase_key: "FOUNDATION", ordinal: 2, batching_policy: "PARTITIONED_SET", requires_human_gate: false },
+          { key: "MATTER_DEFINITION", name: "Matter definition", phase_key: "MATTER_DEFINITION", ordinal: 3, batching_policy: "NONE", requires_human_gate: true },
+        ],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [program] as never;
+      if (path === "/v1/matters/matter-1/review-programs/privilege-program-1/runs" && options?.method === "POST") {
+        startRequests.push(JSON.parse(String(options.body)));
+        return { id: "run-1", program_id: "privilege-program-1" } as never;
+      }
+      if (path === "/v1/matters/matter-1/review-programs/privilege-program-1/runs") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    renderSection();
+    expect(await screen.findByText("Family context prepared")).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Start Setup" }),
+    );
+
+    await waitFor(() => expect(startRequests).toHaveLength(1));
+    expect(startRequests[0]).toMatchObject({ confirm_replace_unfinished_run: false });
+  });
+
+  it("creates a Privilege Review from All Matter and an explicitly selected coding field", async () => {
+    navigation.params = new URLSearchParams();
+    const requests: Array<Record<string, unknown>> = [];
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [
+        {
+          key: "FIRST_PASS_REVIEW", version: 3, schema_version: 1, content_hash: "a".repeat(64),
+          name: "First Pass Review", description: "Issue review", workflow_type: "FIRST_PASS_REVIEW", phases: [], stages: [],
+        },
+        {
+          key: "PRIVILEGE_REVIEW", version: 1, schema_version: 1, content_hash: "b".repeat(64),
+          name: "Privilege Review", description: "Family-aware privilege review", workflow_type: "PRIVILEGE_REVIEW", phases: [], stages: [],
+        },
+      ] as never;
+      if (path === "/v1/matters/matter-1/review-programs" && options?.method === "POST") {
+        requests.push(JSON.parse(String(options.body)));
+        return {
+          id: "privilege-program-1", matter_id: "matter-1", template_key: "PRIVILEGE_REVIEW", name: "Production privilege review",
+        } as never;
+      }
+      if (path === "/v1/matters/matter-1/review-programs") return [] as never;
+      if (path === "/v1/matters/matter-1/review-batches") return [{
+        id: "batch-responsive", name: "Responsive documents", document_count: 1250, status: "READY",
+      }] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [{
+        id: "field-privilege", key: "privilege", display_name: "Privilege", status: "ACTIVE", reviewable: true,
+        cardinality: "SINGLE", type: "ENUM", allowed_values: [
+          { key: "privileged", label: "Privileged", active: true },
+          { key: "not_privileged", label: "Not privileged", active: true },
+          { key: "needs_review", label: "Needs review", active: true },
+        ],
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderSection();
+    await user.click(await screen.findByRole("button", { name: "New Review Program" }));
+    await user.click(screen.getByRole("combobox", { name: "Program type" }));
+    await user.click(await screen.findByRole("option", { name: "Privilege Review" }));
+    await user.type(screen.getByLabelText("Name"), "Production privilege review");
+    await user.click(await screen.findByRole("combobox", { name: "Document population" }));
+    await user.click(await screen.findByRole("option", { name: /All Matter/ }));
+    await user.click(screen.getByRole("combobox", { name: "Privilege coding field" }));
+    await user.click(await screen.findByRole("option", { name: "Privilege" }));
+    await user.click(screen.getByRole("button", { name: "Create program" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      template_key: "PRIVILEGE_REVIEW",
+      key: "production-privilege-review",
+      privilege_review: {
+        population_type: "ALL_MATTER",
+        review_batch_ids: [],
+        target_metadata_definition_id: "field-privilege",
+        review_policy: "LLM_THEN_HUMAN",
+        keep_families_together: true,
+      },
+    });
+  });
+
   it("opens a completed run in read-only demo replay", async () => {
     mockReplayProgramApi();
     renderSection();
@@ -1691,14 +1877,23 @@ describe("ReviewProgramsSection", () => {
           title: "Target weak classifier categories", explanation: "Edit the searches before review.", preview_hash: "c".repeat(64),
           decision_context: {
             retrieval_plan: { targets: [{
-              metadata_definition_id: "definition-1", field_name: "Responsive", class_key: "true", class_label: "Responsive",
-              quality_reasons: ["LOW_F1"], suggested_query: "Responsive true", suggested_quota: 50,
+              metadata_definition_id: "definition-1", field_name: "Accepted Matter Definition query", class_key: "responsive", class_label: "Responsive",
+              criterion_key: "hurricane-disruption", criterion_label: "Hurricane disruption",
+              quality_reasons: ["LOW_F1"], suggested_query: "responsive hurricane claims", suggested_quota: 50,
+              suggested_expanded_query: "responsive | hurricane | claims", suggested_expanded_quota: 50,
             }] },
-            defaults: { control_sample_size: 25, target_batch_size: 100, keep_families_together: true },
+            defaults: { target_batch_size: 100, keep_families_together: true },
           },
           allowed_choices: [{ key: "START", label: "Start targeted review" }, { key: "STOP", label: "Stop program" }],
         }],
       }] as never;
+      if (path.endsWith("/actions/action-1/classifier-improvement-preview") && options?.method === "POST") return {
+        retrieval_preview_hash: "d".repeat(64), requested_document_count: 75, selected_document_count: 63,
+        estimated_batch_count: 4, excluded_prior_program_document_count: 500,
+        excluded_completed_human_review_document_count: 2, overlap_removed_count: 0,
+        query_yields: [{ lane: "ACCEPTED_TARGET", class_key: "responsive", label: "Responsive", requested: 75, selected_count: 63 }],
+        similarity: { available: false }, expansion_recommended: false,
+      } as never;
       if (path.endsWith("/actions/action-1/classifier-improvement-setup") && options?.method === "POST") return {
         id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "CLASSIFIER_IMPROVEMENT",
       } as never;
@@ -1706,16 +1901,19 @@ describe("ReviewProgramsSection", () => {
     });
     renderSection();
 
-    const query = await screen.findByLabelText("Responsive · Responsive");
-    await userEvent.clear(query);
-    await userEvent.type(query, "edited responsive search");
-    const quota = screen.getByLabelText("Target");
+    expect(await screen.findByText("responsive hurricane claims")).toBeInTheDocument();
+    const quota = screen.getByLabelText("Documents requested");
     await userEvent.clear(quota);
     await userEvent.type(quota, "75");
-    const control = screen.getByLabelText("Broad control");
-    await userEvent.clear(control);
-    await userEvent.type(control, "10");
-    await userEvent.click(screen.getByRole("button", { name: "Start targeted review" }));
+    expect(screen.queryByLabelText("Broad control")).not.toBeInTheDocument();
+    const batchSize = screen.getByLabelText("Documents per batch");
+    await userEvent.clear(batchSize);
+    await userEvent.type(batchSize, "20");
+    expect(screen.getByText("Estimated batches before retrieval").parentElement).toHaveTextContent("4");
+    await userEvent.click(screen.getByRole("button", { name: "Find documents" }));
+    expect(await screen.findByText("63 new documents found")).toBeInTheDocument();
+    expect(screen.getByText(/2 documents with completed human coding for the targeted field excluded/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review 63 documents" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
       "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/classifier-improvement-setup",
@@ -1724,14 +1922,17 @@ describe("ReviewProgramsSection", () => {
     const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/classifier-improvement-setup"));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "c".repeat(64),
+      retrieval_preview_hash: "d".repeat(64),
       queries: [{
         metadata_definition_id: "definition-1",
-        class_key: "true",
-        query: "edited responsive search",
+        class_key: "responsive",
+        criterion_key: "hurricane-disruption",
+        query: "responsive hurricane claims",
         quota: 75,
+        expanded_query: null,
+        expanded_quota: 50,
       }],
-      control_sample_size: 10,
-      target_batch_size: 100,
+      target_batch_size: 20,
       keep_families_together: true,
     });
   });
@@ -1818,7 +2019,7 @@ describe("ReviewProgramsSection", () => {
             whole_collection_scoring: {
               state: "COMPLETED", model_count: 1, collection_document_count: 240,
               aggregate_model_document_counts: { scored_document_count: 230 },
-              models: [{ classification_model_id: "model-1", field_name: "Responsive", status: "COMPLETED", scored_document_count: 230, abstained_document_count: 4, excluded_document_count: 6 }],
+              models: [{ classification_model_id: "model-1", scoring_run_id: "scoring-1", field_name: "Responsive", status: "COMPLETED", scored_document_count: 230, abstained_document_count: 4, excluded_document_count: 6 }],
             },
             coverage_plan: { required_profile_count: 2, maximum_candidate_model_document_count: 230, default_minimum_confidence: 0.5, batching_policy: "AD_HOC_BATCH" },
           },
@@ -1836,6 +2037,15 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("Candidate ceiling")).toBeInTheDocument();
     expect(screen.getByText("Ad hoc batch")).toBeInTheDocument();
     expect(screen.getByText(/Existing documents reviewed by both pinned profiles are excluded/)).toBeInTheDocument();
+    expect(screen.getByText(/No review batch exists yet/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View classifier results" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/classification",
+    );
+    expect(screen.getByRole("link", { name: "View predictions" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/classification-models/model-1/scoring-runs/scoring-1",
+    );
     const minimumConfidence = screen.getByLabelText("Minimum classifier confidence %");
     expect(minimumConfidence).toHaveValue(50);
     await userEvent.clear(minimumConfidence);
@@ -1954,6 +2164,14 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByRole("link", { name: "View coverage jobs" })).toHaveAttribute(
       "href",
       "/app/clients/client-1/matters/matter-1/jobs/question-answering?review_batch=coverage-batch-1",
+    );
+    expect(screen.getByRole("link", { name: "Open review batch" })).toHaveAttribute(
+      "href",
+      "/review/matters/matter-1?batch=coverage-batch-1",
+    );
+    expect(screen.getByRole("link", { name: "View batch statistics" })).toHaveAttribute(
+      "href",
+      "/review/matters/matter-1/batches/coverage-batch-1/statistics",
     );
     expect(screen.getByText("Classifier-positive Q&A coverage").closest("li")).toHaveClass("sm:col-span-2");
   });

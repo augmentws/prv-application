@@ -57,6 +57,10 @@ describe("Matter batches", () => {
     renderInMatter(<BatchesSection />);
 
     expect(await screen.findByText("Privilege validation")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Compare coding" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/batches/comparisons",
+    );
     expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
     expect(screen.queryByRole("button", { name: "Statistics" })).not.toBeInTheDocument();
 

@@ -1,7 +1,9 @@
 from app.analysis_task_evidence import (
     MAX_EVIDENCE_PARAGRAPHS,
     build_conditional_evidence_questions,
+    build_inline_evidence_questions,
     collect_conditional_evidence,
+    select_evidence_plans,
     select_evidence_question_keys,
 )
 from app.decision_engine import ChoiceDecisionAnswer, NoulDecisionAnswer
@@ -174,6 +176,21 @@ def test_conditional_evidence_adds_only_exists_and_location_questions() -> None:
     }
 
 
+def test_inline_evidence_companions_share_the_classification_request_contract() -> None:
+    specification = _specification()
+    paragraph_map = segment_paragraphs("Relevant paragraph.\n\nUnrelated footer.")
+
+    questions, plans = build_inline_evidence_questions(specification, paragraph_map)
+
+    assert set(questions) == {
+        "internal_evidence.q1.exists",
+        "internal_evidence.q1.location",
+    }
+    assert "same request" in str(questions["internal_evidence.q1.exists"].instructions)
+    assert select_evidence_plans(plans, ("responsiveness.overall",)) == plans
+    assert select_evidence_plans(plans, ()) == ()
+
+
 def test_conditional_evidence_validates_threshold_and_selected_paragraph() -> None:
     specification = _specification()
     paragraph_map = segment_paragraphs("Relevant paragraph.\n\nSecondary paragraph.")
@@ -192,10 +209,23 @@ def test_conditional_evidence_validates_threshold_and_selected_paragraph() -> No
         ),
     }
 
-    evidence, complete = collect_conditional_evidence(plans, answers)
+    primary_answers = {
+        "responsiveness.overall": ChoiceDecisionAnswer(
+            type="choice",
+            choice="responsive",
+            confidence=0.9,
+            probabilities={"responsive": 0.9, "not_responsive": 0.1},
+        )
+    }
+    evidence, complete = collect_conditional_evidence(
+        plans,
+        answers,
+        primary_answers=primary_answers,
+    )
 
     assert complete is True
     assert evidence["responsiveness.overall"]["paragraph_ids"] == ["¶1"]
+    assert len(evidence["responsiveness.overall"]["answer_fingerprint"]) == 64
     assert evidence["responsiveness.overall"]["candidate_paragraphs"] == [
         {"paragraph_id": "¶1", "probability": 0.9},
         {"paragraph_id": "¶2", "probability": 0.1},

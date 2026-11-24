@@ -24,10 +24,11 @@ from app.matter_entities import (
     unmerge_entity,
     update_entity,
 )
-from app.models import Matter, MatterEntity, MatterFact, MatterFactEntity
+from app.models import Matter, MatterEntity, MatterEntityDomain, MatterFact, MatterFactEntity
 from app.schemas import (
     MatterEntityAction,
     MatterEntityCreate,
+    MatterEntityDomainRead,
     MatterEntityMerge,
     MatterEntityPage,
     MatterEntityRead,
@@ -90,10 +91,18 @@ def _read(db: Session, entity: MatterEntity, *, fact_count: int | None = None) -
             .order_by(MatterEntity.created_at, MatterEntity.id)
         )
     )
+    domains = list(
+        db.scalars(
+            select(MatterEntityDomain)
+            .where(MatterEntityDomain.entity_id == entity.id)
+            .order_by(MatterEntityDomain.normalized_domain)
+        )
+    )
     count = fact_count if fact_count is not None else _fact_counts(db, [entity.id]).get(entity.id, 0)
     return MatterEntityRead.model_validate(entity).model_copy(
         update={
             "variants": [MatterEntityVariantRead.model_validate(variant) for variant in variants],
+            "domains": [MatterEntityDomainRead.model_validate(domain) for domain in domains],
             "fact_count": count,
         }
     )
@@ -165,6 +174,7 @@ def create_matter_entity(
             db,
             matter=matter,
             entity_type=payload.entity_type,
+            organization_category=payload.organization_category,
             display_name=payload.display_name,
             email=payload.email,
             title=payload.title,

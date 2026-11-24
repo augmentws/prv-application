@@ -269,6 +269,9 @@ def test_provider_batch_finalization_refreshes_progress_immediately(
                 return document
             return None
 
+        def commit(self):
+            return None
+
     class StubAdapter:
         def results(self, provider_batch_id):
             assert provider_batch_id == "provider-batch-1"
@@ -278,11 +281,15 @@ def test_provider_batch_finalization_refreshes_progress_immediately(
     monkeypatch.setattr(
         "app.assessment_provider_batches._records",
         lambda _db, received_id: (
-            assessment,
-            SimpleNamespace(),
-            SimpleNamespace(),
-            SimpleNamespace(),
-        ) if received_id == assessment_id else pytest.fail("Unexpected assessment"),
+            (
+                assessment,
+                SimpleNamespace(),
+                SimpleNamespace(),
+                SimpleNamespace(),
+            )
+            if received_id == assessment_id
+            else pytest.fail("Unexpected assessment")
+        ),
     )
     monkeypatch.setattr(
         "app.assessment_provider_batches._skill_version",
@@ -425,7 +432,8 @@ def test_provider_batch_finalization_checkpoints_without_shared_usage_writes(
 
     assert result == {"completed": 1, "failed": 0}
     assert completed_with_shared_refresh == [False]
-    assert session.commits == 1
+    # Provider polling, Artifact retrieval, and the final result are separate transactions.
+    assert session.commits == 3
     assert batch.status == "COMPLETED"
 
 
@@ -779,7 +787,9 @@ def test_retry_recovers_stored_provider_output_and_falls_back_only_when_unavaila
     assert run_document.status == "COMPLETED"
     assert persisted[0]["pipeline_diagnostics"]["mode"] == "RECOVERED_PROVIDER_BATCH_OUTPUT"
     assert refreshed == [assessment_id]
-    assert session.commits == 1
+    # One checkpoint precedes Artifact I/O, one precedes focused model repair,
+    # and the final commit persists the recovered result.
+    assert session.commits == 3
 
 
 def test_refresh_progress_locks_assessment_before_shared_rollup(
@@ -979,9 +989,7 @@ def test_assessment_launch_defaults_to_evidence_first_and_retains_direct_rollbac
     monkeypatch.setattr(settings, "definition_assessment_evidence_shadow_enabled", True)
     monkeypatch.setattr(
         "app.matter_definition_assessments.enqueue_evidence_assessment",
-        lambda _db, workflow_id, **kwargs: evidence_calls.append(
-            {"workflow_id": workflow_id, **kwargs}
-        ),
+        lambda _db, workflow_id, **kwargs: evidence_calls.append({"workflow_id": workflow_id, **kwargs}),
     )
     monkeypatch.setattr(
         "app.matter_definition_assessments.enqueue_definition_assessment",
@@ -1084,12 +1092,8 @@ def test_successful_assessment_supersedes_older_failed_attempts(
 ) -> None:
     matter_id = create_assessment_matter(client, root_token, root_admin)
     base = f"/v1/matters/{matter_id}/definition-assessments"
-    prior_id = uuid.UUID(
-        client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"]
-    )
-    current_id = uuid.UUID(
-        client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"]
-    )
+    prior_id = uuid.UUID(client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"])
+    current_id = uuid.UUID(client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"])
     with TestingSessionLocal() as db:
         prior = db.get(MatterDefinitionAssessmentRun, prior_id)
         current = db.get(MatterDefinitionAssessmentRun, current_id)
@@ -1314,9 +1318,7 @@ def test_synthesis_diagnostics_require_tenant_administrator_role(
         matter = db.get(Matter, uuid.UUID(matter_id))
         assert matter is not None
         tenant_id = matter.client.tenant_id
-        tenant_admin = db.scalar(
-            select(User).where(User.tenant_id == tenant_id, User.tenant_role == "ADMIN")
-        )
+        tenant_admin = db.scalar(select(User).where(User.tenant_id == tenant_id, User.tenant_role == "ADMIN"))
         assert tenant_admin is not None
         tenant_admin_email = tenant_admin.email
 
@@ -1354,9 +1356,7 @@ def test_synthesis_diagnostics_require_tenant_administrator_role(
     user_id = user_response.json()["id"]
     roles_response = client.get(f"/v1/tenants/{tenant_id}/roles", headers=auth(root_token))
     assert roles_response.status_code == 200, roles_response.text
-    matter_admin_role = next(
-        role for role in roles_response.json() if role["key"] == "MATTER_ADMINISTRATOR"
-    )
+    matter_admin_role = next(role for role in roles_response.json() if role["key"] == "MATTER_ADMINISTRATOR")
     grant_response = client.post(
         f"/v1/tenants/{tenant_id}/authorization-grants",
         headers=auth(root_token),
@@ -1728,10 +1728,7 @@ def test_retrieval_feedback_requires_every_topic_and_exact_target() -> None:
 def test_candidate_merge_fills_target_with_reserved_controls() -> None:
     retrieved = [uuid.uuid4() for _ in range(4)]
     controls = [uuid.uuid4() for _ in range(2)]
-    hits = [
-        RetrievalHit(document_id, 1, "issue_1", rank, 1.0)
-        for rank, document_id in enumerate(retrieved, start=1)
-    ]
+    hits = [RetrievalHit(document_id, 1, "issue_1", rank, 1.0) for rank, document_id in enumerate(retrieved, start=1)]
 
     selected, _ = merge_retrieval_candidates(
         hits,
@@ -1811,9 +1808,7 @@ def test_failed_assessment_marks_running_step_failed_with_skill_error(
         assessment = db.get(MatterDefinitionAssessmentRun, uuid.UUID(launched.json()["id"]))
         assert assessment is not None
         workflow = db.get(WorkflowRun, assessment.workflow_run_id)
-        step = db.scalar(
-            select(WorkflowStepRun).where(WorkflowStepRun.workflow_run_id == assessment.workflow_run_id)
-        )
+        step = db.scalar(select(WorkflowStepRun).where(WorkflowStepRun.workflow_run_id == assessment.workflow_run_id))
         assert workflow is not None and step is not None
         assert workflow.status == "QUEUED"
         assert ":retry:" in workflow.dbos_workflow_id
@@ -1984,8 +1979,7 @@ def test_reconciliation_resumes_pending_parent_after_every_document_is_terminal(
         db.add_all(documents)
         db.flush()
         selected = [
-            SelectedCandidate(document.id, 1.0, ({"query_ordinal": 1},), "CRITERION_QUOTA")
-            for document in documents
+            SelectedCandidate(document.id, 1.0, ({"query_ordinal": 1},), "CRITERION_QUOTA") for document in documents
         ]
         materialize_assessment_batch(
             db,
@@ -2010,9 +2004,7 @@ def test_reconciliation_resumes_pending_parent_after_every_document_is_terminal(
         )
         fake_client = SimpleNamespace(
             list_workflows=lambda **_: [durable],
-            resume_workflow=lambda workflow_id, queue_name=None: resume_calls.append(
-                (workflow_id, queue_name)
-            ),
+            resume_workflow=lambda workflow_id, queue_name=None: resume_calls.append((workflow_id, queue_name)),
         )
         monkeypatch.setattr(
             "app.assessment_workflow_reconciliation.get_dbos_client",
@@ -2025,9 +2017,7 @@ def test_reconciliation_resumes_pending_parent_after_every_document_is_terminal(
 
         assert reconciled == {assessment.id}
         assert resume_calls == [(workflow.dbos_workflow_id, "definition-assessments")]
-        assert assessment.configuration_snapshot["reconciled_durable_workflow_ids"] == [
-            workflow.dbos_workflow_id
-        ]
+        assert assessment.configuration_snapshot["reconciled_durable_workflow_ids"] == [workflow.dbos_workflow_id]
 
 
 @pytest.mark.parametrize("terminal_status", ["COMPLETED", "FAILED"])
@@ -2131,8 +2121,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
         db.add_all(documents)
         db.flush()
         selected = [
-            SelectedCandidate(document.id, 1.0, ({"query_ordinal": 1},), "CRITERION_QUOTA")
-            for document in documents
+            SelectedCandidate(document.id, 1.0, ({"query_ordinal": 1},), "CRITERION_QUOTA") for document in documents
         ]
         materialize_assessment_batch(
             db,
@@ -2148,9 +2137,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
         assert previous_review_run is not None
         previous_review_run.status = "COMPLETED"
         for run_document in db.scalars(
-            select(ReviewBatchRunDocument).where(
-                ReviewBatchRunDocument.review_batch_run_id == previous_review_run_id
-            )
+            select(ReviewBatchRunDocument).where(ReviewBatchRunDocument.review_batch_run_id == previous_review_run_id)
         ):
             run_document.status = "COMPLETED"
         assessment.status = "COMPLETED"
@@ -2253,9 +2240,7 @@ def test_synthesis_loads_only_latest_completed_analysis_per_document(
         )
         db.add(step)
         db.flush()
-        version_id = uuid.UUID(
-            assessment.binding_snapshot["document_analysis"]["skill_definition_version_id"]
-        )
+        version_id = uuid.UUID(assessment.binding_snapshot["document_analysis"]["skill_definition_version_id"])
         db.add_all(
             [
                 SkillRun(
@@ -2560,8 +2545,7 @@ def test_synthesis_expands_bare_issue_references_and_rejects_wrong_names() -> No
     question = output["clarification_questions"][0]
     assert "Issue 4: Executive Action and Inaction" in question["question"]
     assert question["rationale"] == (
-        "This distinguishes Issue 4: Executive Action and Inaction from "
-        "Issue 8: Economic Consequences."
+        "This distinguishes Issue 4: Executive Action and Inaction from Issue 8: Economic Consequences."
     )
 
     wrong_name = {"question": "Should Issue 4: Property Insurance Policy Reforms apply?"}

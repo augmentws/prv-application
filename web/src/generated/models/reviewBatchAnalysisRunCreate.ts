@@ -9,4 +9,5 @@
 export interface ReviewBatchAnalysisRunCreate {
   matter_analysis_task_id: string;
   matter_analysis_task_version_id?: string | null;
+  execution_profile_id?: string | null;
 }

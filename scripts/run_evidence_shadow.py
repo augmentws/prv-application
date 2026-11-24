@@ -50,6 +50,20 @@ def _arguments() -> argparse.Namespace:
         help="Override the configured deterministic extraction-window size",
     )
     parser.add_argument(
+        "--extraction-model",
+        help=(
+            "Override provider:model for this isolated shadow launch only; does not change environment or "
+            "persisted workflow bindings"
+        ),
+    )
+    parser.add_argument(
+        "--extraction-model-settings-json",
+        help=(
+            "Override model settings as a JSON object for this isolated shadow launch only; "
+            "use '{}' to omit the published skill's provider-specific settings"
+        ),
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="Execute the managed shadow path; otherwise only validate and report the plans",
@@ -69,6 +83,11 @@ def main() -> None:
         raise ValueError("--retry-failed requires --execute")
     if arguments.map_max_characters is not None and arguments.map_max_characters < 100:
         raise ValueError("--map-max-characters must be at least 100")
+    extraction_model_settings = None
+    if arguments.extraction_model_settings_json is not None:
+        extraction_model_settings = json.loads(arguments.extraction_model_settings_json)
+        if not isinstance(extraction_model_settings, dict):
+            raise ValueError("--extraction-model-settings-json must contain a JSON object")
     with SessionLocal() as db:
         prepared = prepare_evidence_shadow_launch(
             db,
@@ -77,6 +96,8 @@ def main() -> None:
             document_ids=arguments.document_id,
             max_documents=arguments.max_documents,
             map_max_characters=arguments.map_max_characters,
+            extraction_model=arguments.extraction_model,
+            extraction_model_settings=extraction_model_settings,
         )
         report = (
             asyncio.run(

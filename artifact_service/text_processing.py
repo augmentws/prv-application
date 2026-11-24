@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 import uuid
+from collections import Counter, defaultdict
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
@@ -12,9 +18,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import regex as re
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
+from artifact_service.config import get_artifact_settings
 from artifact_service.database import ArtifactSessionLocal
 from artifact_service.derived import store_derived_artifact
 from artifact_service.models import (
@@ -27,6 +34,8 @@ from artifact_service.models import (
 )
 from artifact_service.schemas import TextProcessingChange, TextProcessingRule
 from artifact_service.storage import BlobStorage, get_storage
+
+logger = logging.getLogger(__name__)
 
 PROCESSOR_VERSION = "collection-text-v9"
 MAX_TEST_TEXT_CHARS = 100_000
@@ -82,6 +91,35 @@ class SourceText:
 
 
 @dataclass(frozen=True)
+class _SourceCandidate:
+    role: str
+    artifact: Artifact
+    blob: ContentBlob
+
+
+@dataclass(frozen=True)
+class _ChunkItem:
+    item: CollectionItem
+    candidates: tuple[_SourceCandidate, ...]
+
+
+@dataclass(frozen=True)
+class _RunConfiguration:
+    run_id: uuid.UUID
+    processor_version: str
+    configuration_hash: str
+    rules: tuple[TextProcessingRule, ...]
+    disabled_rule_ids: frozenset[str]
+    actor_user_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class _ItemOutcome:
+    status: str
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class ProcessingResult:
     text: str
     changes: list[TextProcessingChange]
@@ -126,7 +164,7 @@ def configuration_hash(rules: list[TextProcessingRule], *, disabled_rule_ids: se
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def validate_rules(rules: list[TextProcessingRule]) -> None:
+def validate_rules(rules: Sequence[TextProcessingRule]) -> None:
     for rule in rules:
         flags = 0 if rule.case_sensitive else re.IGNORECASE
         try:
@@ -155,6 +193,9 @@ def load_source_text(db: Session, storage: BlobStorage, item: CollectionItem) ->
         )
         .order_by(role_order, Artifact.created_at.desc())
     ).all()
+    # Materialize candidate blob locations, then release PostgreSQL while the
+    # object bodies are downloaded and decoded.
+    db.commit()
     for role, artifact, blob in rows:
         if role == "NATIVE" and not _native_can_supply_text(item, artifact):
             continue
@@ -173,12 +214,14 @@ def load_source_text(db: Session, storage: BlobStorage, item: CollectionItem) ->
 
 def process_text(
     value: str,
-    rules: list[TextProcessingRule],
+    rules: Sequence[TextProcessingRule],
     *,
     processor_version: str = PROCESSOR_VERSION,
-    disabled_rule_ids: set[str] | None = None,
+    disabled_rule_ids: AbstractSet[str] | None = None,
+    rules_validated: bool = False,
 ) -> ProcessingResult:
-    validate_rules(rules)
+    if not rules_validated:
+        validate_rules(rules)
     if processor_version not in {
         "collection-text-v1",
         "collection-text-v2",
@@ -246,7 +289,11 @@ def process_text(
             text,
         )
     if reply_count:
-        changes.append(TextProcessingChange(rule_id="system-reply-history", rule_name="Quoted reply history", match_count=reply_count))
+        changes.append(
+            TextProcessingChange(
+                rule_id="system-reply-history", rule_name="Quoted reply history", match_count=reply_count
+            )
+        )
     if "system-attachment-placeholder" not in disabled and processor_version in {
         "collection-text-v2",
         "collection-text-v3",
@@ -276,7 +323,9 @@ def process_text(
         text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         if text != before and not (forwarded_count or reply_count or attachment_count):
-            changes.append(TextProcessingChange(rule_id="system-whitespace", rule_name="Whitespace normalization", match_count=1))
+            changes.append(
+                TextProcessingChange(rule_id="system-whitespace", rule_name="Whitespace normalization", match_count=1)
+            )
 
     for rule in rules:
         if not rule.enabled or rule.id in disabled:
@@ -324,7 +373,9 @@ def process_text(
 
     warnings: list[str] = []
     if original_length and len(text) < original_length * 0.5:
-        warnings.append("More than half of the source text was removed; review this result before running the collection.")
+        warnings.append(
+            "More than half of the source text was removed; review this result before running the collection."
+        )
     if not text:
         warnings.append("The processor produced empty text.")
     return ProcessingResult(text=text, changes=changes, warnings=warnings)
@@ -365,8 +416,10 @@ def _remove_lotus_forwarding_envelopes_v2(value: str) -> tuple[str, int]:
             if re.match(r"^subject:", lines[scan].strip(), re.IGNORECASE):
                 subject_index = scan
                 break
-            if scan > index and not lines[scan].strip() and not any(
-                envelope_header.match(line.strip()) for line in lines[index:scan]
+            if (
+                scan > index
+                and not lines[scan].strip()
+                and not any(envelope_header.match(line.strip()) for line in lines[index:scan])
             ):
                 break
             scan += 1
@@ -568,7 +621,11 @@ def _remove_lotus_forwarding_envelopes_v5(
 
         subject = " ".join(subject_parts).strip()
         last_output_line = next((line.strip() for line in reversed(output) if line.strip()), "")
-        if subject and normalized(subject) != normalized(last_output_line) and not body_repeats_subject(subject, body_index):
+        if (
+            subject
+            and normalized(subject) != normalized(last_output_line)
+            and not body_repeats_subject(subject, body_index)
+        ):
             output.append(f"{subject_prefix}{subject}")
             output.append("")
         index = body_index
@@ -725,8 +782,145 @@ def _remove_forwarding_envelopes_v8(value: str) -> tuple[str, int]:
     return text, standard_count + lotus_count
 
 
+def _load_processing_chunk(
+    db: Session,
+    *,
+    collection_id: uuid.UUID,
+    scope_cutoff: datetime,
+    after_created_at: datetime | None,
+    after_item_id: uuid.UUID | None,
+    chunk_size: int,
+) -> list[_ChunkItem]:
+    item_query = select(CollectionItem).where(
+        CollectionItem.collection_id == collection_id,
+        CollectionItem.created_at <= scope_cutoff,
+    )
+    if after_created_at is not None and after_item_id is not None:
+        item_query = item_query.where(
+            or_(
+                CollectionItem.created_at > after_created_at,
+                and_(CollectionItem.created_at == after_created_at, CollectionItem.id > after_item_id),
+            )
+        )
+    items = list(db.scalars(item_query.order_by(CollectionItem.created_at, CollectionItem.id).limit(chunk_size)))
+    if not items:
+        return []
+
+    item_ids = [item.id for item in items]
+    role_order = case(
+        (CollectionItemArtifact.artifact_role == "EXTRACTED_TEXT", 0),
+        (CollectionItemArtifact.artifact_role == "OCR_TEXT", 1),
+        (CollectionItemArtifact.artifact_role == "NATIVE", 2),
+        else_=3,
+    )
+    rows = db.execute(
+        select(CollectionItemArtifact.collection_item_id, CollectionItemArtifact.artifact_role, Artifact, ContentBlob)
+        .join(Artifact, Artifact.id == CollectionItemArtifact.artifact_id)
+        .join(ContentBlob, ContentBlob.id == Artifact.content_blob_id)
+        .where(
+            CollectionItemArtifact.collection_item_id.in_(item_ids),
+            CollectionItemArtifact.artifact_role.in_(("EXTRACTED_TEXT", "OCR_TEXT", "NATIVE")),
+            Artifact.status == "FINALIZED",
+        )
+        .order_by(CollectionItemArtifact.collection_item_id, role_order, Artifact.created_at.desc())
+    ).all()
+    candidates_by_item: dict[uuid.UUID, list[_SourceCandidate]] = defaultdict(list)
+    for item_id, role, artifact, blob in rows:
+        candidates_by_item[item_id].append(_SourceCandidate(role=role, artifact=artifact, blob=blob))
+    return [_ChunkItem(item=item, candidates=tuple(candidates_by_item.get(item.id, ()))) for item in items]
+
+
+def _load_source_from_candidates(storage: BlobStorage, chunk_item: _ChunkItem) -> SourceText | None:
+    for candidate in chunk_item.candidates:
+        if candidate.role == "NATIVE" and not _native_can_supply_text(chunk_item.item, candidate.artifact):
+            continue
+        stream = storage.open(candidate.blob.bucket_name, candidate.blob.storage_key)
+        try:
+            content = stream.read(MAX_PROCESSING_BYTES + 1)
+        finally:
+            stream.close()
+        if len(content) > MAX_PROCESSING_BYTES:
+            raise ValueError("Source text exceeds the 20 MiB processing limit")
+        text = _extract_text(content, chunk_item.item, candidate.role, candidate.artifact)
+        if text and text.strip():
+            return SourceText(
+                candidate.artifact.id,
+                candidate.role,
+                candidate.artifact.content_hash,
+                text,
+            )
+    return None
+
+
+def _process_chunk_item(
+    storage: BlobStorage,
+    chunk_item: _ChunkItem,
+    configuration: _RunConfiguration,
+) -> _ItemOutcome:
+    try:
+        # Source reads and text processing happen without a checked-out database
+        # connection. Only persistence below uses a short-lived transaction.
+        source = _load_source_from_candidates(storage, chunk_item)
+        if source is None:
+            return _ItemOutcome("SKIPPED")
+        result = process_text(
+            source.text,
+            configuration.rules,
+            processor_version=configuration.processor_version,
+            disabled_rule_ids=configuration.disabled_rule_ids,
+            rules_validated=True,
+        )
+        derivation_key = hashlib.sha256(
+            f"{source.content_hash}:{configuration.configuration_hash}".encode()
+        ).hexdigest()
+        with ArtifactSessionLocal() as db:
+            _, created = store_derived_artifact(
+                db,
+                storage,
+                item=chunk_item.item,
+                content=result.text.encode("utf-8"),
+                media_type="text/plain; charset=utf-8",
+                original_filename=f"{Path(chunk_item.item.original_filename).stem}.normalized.txt",
+                artifact_type="NORMALIZED_TEXT",
+                source_artifact_id=source.artifact_id,
+                relationship="NORMALIZED_FROM",
+                processing_run_id=configuration.run_id,
+                derivation_key=derivation_key,
+                artifact_metadata={
+                    "processor_version": configuration.processor_version,
+                    "configuration_hash": configuration.configuration_hash,
+                    "source_role": source.role,
+                    "changes": [change.model_dump(mode="json") for change in result.changes],
+                    "warnings": result.warnings,
+                },
+                actor_user_id=configuration.actor_user_id,
+            )
+            db.commit()
+        return _ItemOutcome("CREATED" if created else "REUSED")
+    except Exception as exc:  # noqa: BLE001 - one malformed item must not abort the collection
+        return _ItemOutcome("FAILED", str(exc)[:4000])
+
+
+def _checkpoint_processing_chunk(run_id: uuid.UUID, outcomes: list[_ItemOutcome]) -> None:
+    counts = Counter(outcome.status for outcome in outcomes)
+    errors = [outcome.error_message for outcome in outcomes if outcome.error_message]
+    with ArtifactSessionLocal() as db:
+        run = db.get(CollectionTextProcessingRun, run_id)
+        if run is None:
+            raise ValueError("Collection text processing run not found while checkpointing")
+        run.processed_count += len(outcomes)
+        run.created_count += counts["CREATED"]
+        run.reused_count += counts["REUSED"]
+        run.skipped_count += counts["SKIPPED"]
+        run.failed_count += counts["FAILED"]
+        if errors:
+            run.error_message = errors[-1]
+        db.commit()
+
+
 def process_run(run_id: uuid.UUID) -> None:
     storage = get_storage()
+    settings = get_artifact_settings()
     with ArtifactSessionLocal() as db:
         run = db.get(CollectionTextProcessingRun, run_id)
         if run is None:
@@ -737,79 +931,84 @@ def process_run(run_id: uuid.UUID) -> None:
         if run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
             return
         rules = [TextProcessingRule.model_validate(value) for value in run.rules_snapshot]
+        validate_rules(rules)
+        scope_cutoff = run.created_at
         run.status = "RUNNING"
         run.started_at = run.started_at or utcnow()
         # A DBOS step may restart after a worker interruption. Recompute counters from
-        # the full frozen collection scope while deterministic artifact keys prevent duplicates.
+        # the frozen collection scope while deterministic artifact keys prevent duplicates.
         run.processed_count = 0
         run.created_count = 0
         run.reused_count = 0
         run.skipped_count = 0
         run.failed_count = 0
         run.error_message = None
-        run.total_count = db.scalar(
-            select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection.id)
-        ) or 0
+        run.total_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(CollectionItem)
+                .where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.created_at <= scope_cutoff,
+                )
+            )
+            or 0
+        )
+        configuration = _RunConfiguration(
+            run_id=run.id,
+            processor_version=run.processor_version,
+            configuration_hash=run.configuration_hash,
+            rules=tuple(rules),
+            disabled_rule_ids=frozenset(run.disabled_rule_ids),
+            actor_user_id=run.requested_by_user_id,
+        )
+        collection_id = collection.id
+        total_count = run.total_count
         db.commit()
 
-        item_ids = list(
-            db.scalars(
-                select(CollectionItem.id)
-                .where(CollectionItem.collection_id == collection.id)
-                .order_by(CollectionItem.created_at, CollectionItem.id)
-            )
-        )
+    started = time.monotonic()
+    processed = 0
+    after_created_at: datetime | None = None
+    after_item_id: uuid.UUID | None = None
+    with ThreadPoolExecutor(
+        max_workers=settings.text_processing_concurrency,
+        thread_name_prefix="collection-text",
+    ) as executor:
+        while True:
+            with ArtifactSessionLocal() as db:
+                chunk = _load_processing_chunk(
+                    db,
+                    collection_id=collection_id,
+                    scope_cutoff=scope_cutoff,
+                    after_created_at=after_created_at,
+                    after_item_id=after_item_id,
+                    chunk_size=settings.text_processing_chunk_size,
+                )
+            if not chunk:
+                break
 
-    for item_id in item_ids:
-        with ArtifactSessionLocal() as db:
-            run = db.get(CollectionTextProcessingRun, run_id)
-            item = db.get(CollectionItem, item_id)
-            if run is None or item is None:
-                continue
-            try:
-                source = load_source_text(db, storage, item)
-                if source is None:
-                    run.skipped_count += 1
-                else:
-                    result = process_text(
-                        source.text,
-                        rules,
-                        processor_version=run.processor_version,
-                        disabled_rule_ids=set(run.disabled_rule_ids),
-                    )
-                    derivation_key = hashlib.sha256(
-                        f"{source.content_hash}:{run.configuration_hash}".encode()
-                    ).hexdigest()
-                    _, created = store_derived_artifact(
-                        db,
-                        storage,
-                        item=item,
-                        content=result.text.encode("utf-8"),
-                        media_type="text/plain; charset=utf-8",
-                        original_filename=f"{Path(item.original_filename).stem}.normalized.txt",
-                        artifact_type="NORMALIZED_TEXT",
-                        source_artifact_id=source.artifact_id,
-                        relationship="NORMALIZED_FROM",
-                        processing_run_id=run.id,
-                        derivation_key=derivation_key,
-                        artifact_metadata={
-                            "processor_version": run.processor_version,
-                            "configuration_hash": run.configuration_hash,
-                            "source_role": source.role,
-                            "changes": [change.model_dump(mode="json") for change in result.changes],
-                            "warnings": result.warnings,
-                        },
-                        actor_user_id=run.requested_by_user_id,
-                    )
-                    if created:
-                        run.created_count += 1
-                    else:
-                        run.reused_count += 1
-            except Exception as exc:  # noqa: BLE001 - item failures must not abort the collection
-                run.failed_count += 1
-                run.error_message = str(exc)[:4000]
-            run.processed_count += 1
-            db.commit()
+            futures = {
+                executor.submit(_process_chunk_item, storage, chunk_item, configuration): chunk_item.item.id
+                for chunk_item in chunk
+            }
+            outcomes: list[_ItemOutcome] = []
+            for future in as_completed(futures):
+                try:
+                    outcomes.append(future.result())
+                except Exception as exc:  # noqa: BLE001 - defensive; workers normally return FAILED
+                    outcomes.append(_ItemOutcome("FAILED", str(exc)[:4000]))
+            _checkpoint_processing_chunk(run_id, outcomes)
+            processed += len(outcomes)
+            after_created_at = chunk[-1].item.created_at
+            after_item_id = chunk[-1].item.id
+            elapsed = max(time.monotonic() - started, 0.001)
+            logger.info(
+                "Collection text processing progress run_id=%s processed=%s total=%s rate=%.1f_docs_per_second",
+                run_id,
+                processed,
+                total_count,
+                processed / elapsed,
+            )
 
     with ArtifactSessionLocal() as db:
         run = db.get(CollectionTextProcessingRun, run_id)
@@ -840,14 +1039,17 @@ def _native_can_supply_text(item: CollectionItem, artifact: Artifact) -> bool:
         item.record_type == "EMAIL"
         or media_type == "message/rfc822"
         or media_type.startswith("text/")
-        or Path(artifact.original_filename).suffix.lower() in {".eml", ".txt", ".text", ".md", ".html", ".htm", ".csv", ".json", ".xml"}
+        or Path(artifact.original_filename).suffix.lower()
+        in {".eml", ".txt", ".text", ".md", ".html", ".htm", ".csv", ".json", ".xml"}
     )
 
 
 def _extract_text(content: bytes, item: CollectionItem, role: str, artifact: Artifact) -> str:
     media_type = artifact.media_type.split(";", 1)[0].lower()
     if role == "NATIVE" and (
-        item.record_type == "EMAIL" or media_type == "message/rfc822" or artifact.original_filename.lower().endswith(".eml")
+        item.record_type == "EMAIL"
+        or media_type == "message/rfc822"
+        or artifact.original_filename.lower().endswith(".eml")
     ):
         message = BytesParser(policy=policy.default).parsebytes(content)
         body = message.get_body(preferencelist=("plain", "html"))

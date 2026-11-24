@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ from app.analysis_task_promotions import (
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.analysis_tasks import MatterAnalysisTaskConflict
 from app.artifact_gateway import AnalysisInputItemSnapshot, TextSourceReference, WorkflowArtifactReference
+from app.database_work import WorkerDatabaseLease
 from app.decision_engine import DecisionEngineRegistry, DecisionEnvelope
 from app.job_executions import ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, current_job_execution
 from app.models import (
@@ -48,6 +50,7 @@ from app.models import (
     ReviewBatchRunPromotion,
     ReviewBatchRunValue,
     ReviewDecisionResult,
+    SearchProjectionOperation,
     SkillDefinition,
     SkillRun,
     Tenant,
@@ -60,10 +63,14 @@ from tests.test_review_batches import add_documents
 
 
 class _FakeDecisionEngine:
-    def __init__(self) -> None:
+    def __init__(self, transaction_probe=None) -> None:
         self.requests = []
+        self.transaction_probe = transaction_probe
+        self.transaction_states: list[bool] = []
 
     async def evaluate(self, request) -> DecisionEnvelope:
+        if self.transaction_probe is not None:
+            self.transaction_states.append(bool(self.transaction_probe()))
         self.requests.append(request)
         now = datetime.now(UTC)
         answers = {}
@@ -180,9 +187,7 @@ def test_legacy_review_program_task_allows_only_pinned_coverage_ad_hoc_scope() -
         notification_parent_id=parent_id,
         execution_policy={},
     )
-    qc_batch.selection_definition["review_program_id"] = qc_batch.selection_definition.pop(
-        "program_id"
-    )
+    qc_batch.selection_definition["review_program_id"] = qc_batch.selection_definition.pop("program_id")
     assert _allows_review_program_coverage_ad_hoc(
         review_program_run=review_program_run,
         batch=qc_batch,
@@ -441,7 +446,7 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
             ),
         )
         registry = DecisionEngineRegistry()
-        engine = _FakeDecisionEngine()
+        engine = _FakeDecisionEngine(execution_db.in_transaction)
         registry.register("jev", engine)
         result = execute_analysis_task_playground(
             execution_db,
@@ -454,27 +459,23 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
         assert result.coverage["complete"] is True
         assert result.coverage["evidence_complete"] is True
         assert result.coverage["evidence_target_question_count"] == 1
-        assert result.coverage["evidence_localization_request_count"] == 1
+        assert result.coverage["evidence_localization_request_count"] == 0
+        assert result.coverage["evidence_collection_mode"] == "INLINE"
+        assert result.coverage["classification_provider_request_count"] == 1
         assert result.evidence["privilege.legal_advice"]["paragraph_ids"] == ["¶1"]
         assert result.evidence["privilege.legal_advice"]["exists_probability"] == 0.96
         assert result.answers["privilege.legal_advice"]["noul"] == 0.93
         assert result.recommendations["potentially_privileged"]["matched"] is True
-        assert len(engine.requests) == 2
-        assert set(engine.requests[0].questions) == {"privilege.legal_advice"}
-        assert set(engine.requests[1].questions) == {
+        assert len(engine.requests) == 1
+        assert engine.transaction_states == [False]
+        assert set(engine.requests[0].questions) == {
+            "privilege.legal_advice",
             "internal_evidence.q1.exists",
             "internal_evidence.q1.location",
         }
-        assert set(engine.requests[1].state) == {"document", "classification"}
-        assert "text" not in engine.requests[1].state["document"]
-        assert engine.requests[1].state["classification"]["answers"] == {
-            "privilege.legal_advice": {"type": "noul", "noul": 0.93}
-        }
         assert engine.requests[0].state["matter"]["decision_context"] == {
             "summary": "Review communications for requests for or provision of legal advice.",
-            "controlling_guidance": [
-                "The communication must concern legal rather than business advice."
-            ],
+            "controlling_guidance": ["The communication must concern legal rather than business advice."],
             "responsiveness_scope": [],
             "inclusion_criteria": ["Requests for legal advice", "Provision of legal advice"],
             "exclusion_criteria": ["Pure business advice"],
@@ -491,13 +492,11 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
         }
         assert result.provider == "typesafe"
         assert result.model == "jev-test"
-        assert execution_db.scalar(
-            select(SkillRun).where(SkillRun.id == result.evaluation_skill_run_id)
-        ).status == "COMPLETED"
-        assert result.evidence_skill_run_id is not None
-        assert execution_db.scalar(
-            select(SkillRun).where(SkillRun.id == result.evidence_skill_run_id)
-        ).status == "COMPLETED"
+        assert (
+            execution_db.scalar(select(SkillRun).where(SkillRun.id == result.evaluation_skill_run_id)).status
+            == "COMPLETED"
+        )
+        assert result.evidence_skill_run_id is None
         usage_rows = list(
             execution_db.scalars(
                 select(ExternalProviderUsage).where(
@@ -506,12 +505,9 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
                 )
             )
         )
-        assert len(usage_rows) == 2
-        assert sum(row.input_tokens for row in usage_rows) == 84
-        assert {row.details["phase"] for row in usage_rows} == {
-            "CLASSIFICATION",
-            "EVIDENCE_LOCALIZATION",
-        }
+        assert len(usage_rows) == 1
+        assert sum(row.input_tokens for row in usage_rows) == 42
+        assert {row.details["phase"] for row in usage_rows} == {"CLASSIFICATION"}
         review_run = execution_db.get(ReviewBatchRun, result.review_batch_run_id)
         assert review_run is not None
         assert review_run.result_policy == "ISOLATED"
@@ -677,11 +673,12 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
 
     with TestingSessionLocal() as check_db:
         assert check_db.scalar(select(ReviewDecisionResult).where(ReviewDecisionResult.id == result_id)) is not None
-        assert check_db.scalar(
-            select(SkillDefinition).where(
-                SkillDefinition.key == "evaluate_analysis_task_decision_specification"
+        assert (
+            check_db.scalar(
+                select(SkillDefinition).where(SkillDefinition.key == "evaluate_analysis_task_decision_specification")
             )
-        ) is not None
+            is not None
+        )
 
 
 def test_question_answering_batch_run_can_be_canceled(
@@ -808,9 +805,7 @@ def test_question_answering_job_lists_and_retries_retryable_document_failures(
     assert failure_data["items"][0]["failure_retriable"] is True
     retryable_document_id = failure_data["items"][0]["matter_document_id"]
     nonretryable_document_id = next(
-        item["matter_document_id"]
-        for item in failure_data["items"]
-        if not item["failure_retriable"]
+        item["matter_document_id"] for item in failure_data["items"] if not item["failure_retriable"]
     )
 
     rejected = client.post(
@@ -1021,21 +1016,37 @@ def test_whole_matter_question_answering_uses_native_input_manifest(
         return "Counsel provided legal advice to the client in a confidential communication."
 
     monkeypatch.setattr("app.analysis_task_playground.read_text_source", read_pinned_text)
+    slots = threading.BoundedSemaphore(1)
+    database_lease = WorkerDatabaseLease(slots, operation="test-document", warning_seconds=0.01)
+    database_lease.acquire()
+
+    def database_capacity_is_available() -> bool:
+        acquired = slots.acquire(blocking=False)
+        if acquired:
+            slots.release()
+        return acquired
+
     registry = DecisionEngineRegistry()
-    registry.register("jev", _FakeDecisionEngine())
+    engine = _FakeDecisionEngine(database_capacity_is_available)
+    registry.register("jev", engine)
     with TestingSessionLocal() as execution_db:
         review_run = execution_db.get(ReviewBatchRun, uuid.UUID(run["id"]))
         assert review_run is not None and review_run.workflow_run_record_id is not None
         prepared = prepare_analysis_task_batch(execution_db, review_run.workflow_run_record_id)
         assert [str(document_id) for document_id in prepared] == document_ids
-        result = execute_analysis_task_document(
-            execution_db,
-            review_run.workflow_run_record_id,
-            prepared[0],
-            complete_run=False,
-            registry=registry,
-        )
-        assert result.status == "COMPLETED"
+        try:
+            result = execute_analysis_task_document(
+                execution_db,
+                review_run.workflow_run_record_id,
+                prepared[0],
+                complete_run=False,
+                registry=registry,
+                database_lease=database_lease,
+            )
+            assert result.status == "COMPLETED"
+        finally:
+            database_lease.release()
+        assert engine.transaction_states == [True]
 
     jobs = client.get(
         f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs",
@@ -1056,9 +1067,7 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
     _bootstrap_skills(db, root_admin)
     # Simulate an installation bootstrapped before batch analysis had its own binding.
     db.execute(
-        delete(WorkflowSkillBinding).where(
-            WorkflowSkillBinding.workflow_key == MATTER_ANALYSIS_TASK_BATCH_SPEC.key
-        )
+        delete(WorkflowSkillBinding).where(WorkflowSkillBinding.workflow_key == MATTER_ANALYSIS_TASK_BATCH_SPEC.key)
     )
     db.commit()
     _, token, matter_id = create_tenant_context(client, root_token)
@@ -1071,11 +1080,32 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
     assert batch_response.status_code == 202, batch_response.text
     batch_id = batch_response.json()["id"]
     task = _create_published_task(client, token, matter_id)
+    profile_response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/versions/1/execution-profiles",
+        headers=auth(token),
+        json={"key": "jev_pinned", "name": "Jev pinned model", "decision_provider": "JEV"},
+    )
+    assert profile_response.status_code == 201, profile_response.text
+    execution_profile = profile_response.json()
+
+    invalid_profile = client.post(
+        f"/v1/matters/{matter_id}/review-batches/{batch_id}/analysis-runs",
+        headers=auth(token),
+        json={
+            "matter_analysis_task_id": task["id"],
+            "execution_profile_id": str(uuid.uuid4()),
+        },
+    )
+    assert invalid_profile.status_code == 409, invalid_profile.text
+    assert "Execution profile does not belong to the selected analysis task version" in invalid_profile.text
 
     queued = client.post(
         f"/v1/matters/{matter_id}/review-batches/{batch_id}/analysis-runs",
         headers=auth(token),
-        json={"matter_analysis_task_id": task["id"]},
+        json={
+            "matter_analysis_task_id": task["id"],
+            "execution_profile_id": execution_profile["id"],
+        },
     )
     assert queued.status_code == 202, queued.text
     queued_data = queued.json()
@@ -1083,6 +1113,7 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
     assert queued_data["result_policy"] == "ISOLATED"
     assert queued_data["configuration_snapshot"]["mode"] == "BATCH"
     assert queued_data["configuration_snapshot"]["task_name"] == "Privilege review"
+    assert queued_data["configuration_snapshot"]["execution_profile_id"] == execution_profile["id"]
     execution_response = client.get(
         f"/v1/jobs/ANALYSIS_TASK_BATCH_RUN/{queued_data['id']}/execution",
         headers=auth(token),
@@ -1111,19 +1142,13 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
     assert jobs[0]["document_count"] == 2
     assert jobs[0]["execution"] == execution_response.json()["current_execution"]
     filtered_jobs = client.get(
-        (
-            f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs"
-            f"?review_batch_id={batch_id}"
-        ),
+        (f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs?review_batch_id={batch_id}"),
         headers=auth(token),
     )
     assert filtered_jobs.status_code == 200, filtered_jobs.text
     assert [job["id"] for job in filtered_jobs.json()] == [queued_data["id"]]
     unrelated_jobs = client.get(
-        (
-            f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs"
-            f"?review_batch_id={uuid.uuid4()}"
-        ),
+        (f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs?review_batch_id={uuid.uuid4()}"),
         headers=auth(token),
     )
     assert unrelated_jobs.status_code == 200, unrelated_jobs.text
@@ -1137,8 +1162,19 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
             text="Counsel provided legal advice to the client in a confidential communication.",
         ),
     )
+    slots = threading.BoundedSemaphore(1)
+    database_lease = WorkerDatabaseLease(slots, operation="test-document", warning_seconds=0.01)
+    database_lease.acquire()
+
+    def database_capacity_is_available() -> bool:
+        acquired = slots.acquire(blocking=False)
+        if acquired:
+            slots.release()
+        return acquired
+
     registry = DecisionEngineRegistry()
-    registry.register("jev", _FakeDecisionEngine())
+    engine = _FakeDecisionEngine(database_capacity_is_available)
+    registry.register("jev", engine)
     with TestingSessionLocal() as execution_db:
         review_run = execution_db.get(ReviewBatchRun, uuid.UUID(queued_data["id"]))
         assert review_run is not None and review_run.workflow_run_record_id is not None
@@ -1153,15 +1189,20 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
         )
         prepared = prepare_analysis_task_batch(execution_db, workflow_id)
         assert {str(value) for value in prepared} == set(document_ids)
-        for document_id in prepared:
-            result = execute_analysis_task_document(
-                execution_db,
-                workflow_id,
-                document_id,
-                complete_run=False,
-                registry=registry,
-            )
-            assert result.status == "COMPLETED"
+        try:
+            for document_id in prepared:
+                result = execute_analysis_task_document(
+                    execution_db,
+                    workflow_id,
+                    document_id,
+                    complete_run=False,
+                    registry=registry,
+                    database_lease=database_lease,
+                )
+                assert result.status == "COMPLETED"
+        finally:
+            database_lease.release()
+        assert engine.transaction_states == [True, True]
         execution_db.expire_all()
         running_workflow = execution_db.get(WorkflowRun, workflow_id)
         assert running_workflow is not None
@@ -1192,9 +1233,9 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
         assert completed_workflow.status == "COMPLETED"
         assert completed_workflow.current_stage == "COMPLETED"
         assert completed_workflow.progress_completed == 2
-        assert completed_workflow.request_count == 4
-        assert completed_workflow.input_tokens == 168
-        assert completed_workflow.output_tokens == 20
+        assert completed_workflow.request_count == 2
+        assert completed_workflow.input_tokens == 84
+        assert completed_workflow.output_tokens == 10
 
     progress_response = client.get(
         f"/v1/matters/{matter_id}/review-batches/{batch_id}/runs/{queued_data['id']}/progress",
@@ -1231,11 +1272,14 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
         assert run is not None
         assert run.status == "COMPLETED"
         assert run.processed_document_count == 2
-        assert check_db.scalar(
-            select(func.count())
-            .select_from(ReviewBatchRunDocument)
-            .where(ReviewBatchRunDocument.review_batch_run_id == run.id)
-        ) == 2
+        assert (
+            check_db.scalar(
+                select(func.count())
+                .select_from(ReviewBatchRunDocument)
+                .where(ReviewBatchRunDocument.review_batch_run_id == run.id)
+            )
+            == 2
+        )
 
         destination = MetadataDefinition(
             matter_id=uuid.UUID(matter_id),
@@ -1303,20 +1347,23 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
             [uuid.UUID(value) for value in eligible],
         )
         event_count = promotion_db.scalar(
-            select(func.count()).select_from(MetadataEvent).where(
-                MetadataEvent.source_id == f"analysis-task-promotion:{promotion_id}"
-            )
+            select(func.count())
+            .select_from(MetadataEvent)
+            .where(MetadataEvent.source_id == f"analysis-task-promotion:{promotion_id}")
         )
         apply_analysis_task_promotion_chunk(
             promotion_db,
             promotion_id,
             [uuid.UUID(value) for value in eligible],
         )
-        assert promotion_db.scalar(
-            select(func.count()).select_from(MetadataEvent).where(
-                MetadataEvent.source_id == f"analysis-task-promotion:{promotion_id}"
+        assert (
+            promotion_db.scalar(
+                select(func.count())
+                .select_from(MetadataEvent)
+                .where(MetadataEvent.source_id == f"analysis-task-promotion:{promotion_id}")
             )
-        ) == event_count
+            == event_count
+        )
         complete_analysis_task_promotion(promotion_db, promotion_id)
 
         promotion = promotion_db.get(ReviewBatchRunPromotion, promotion_id)
@@ -1341,6 +1388,10 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
         )
         assert first_current is not None and first_current.value_boolean is True
         assert second_current is not None and second_current.resolution_state == "EMPTY"
+        search_operation = promotion_db.get(SearchProjectionOperation, promotion.search_operation_id)
+        assert search_operation is not None
+        assert search_operation.payload["projection_scope"] == "MATTER_CODING_FIELDS"
+        assert search_operation.payload["metadata_definition_ids"] == [str(destination_id)]
 
     fetched_promotion = client.get(
         f"/v1/matters/{matter_id}/review-batches/{batch_id}/runs/{queued_data['id']}/promotion",

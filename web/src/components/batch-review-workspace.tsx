@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type {
   ClientRead,
   BatchTopicTaxonomyRead,
+  AnalysisTaskExecutionProfileRead,
   CollectionItemRead,
   CustodianRead,
   JobExecutionRead,
@@ -262,6 +263,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const [analysisDialogOpen, setAnalysisDialogOpen] = useState(initialAnalysisDialogOpen);
   const [promotionDialogOpen, setPromotionDialogOpen] = useState(false);
   const [analysisTaskId, setAnalysisTaskId] = useState("");
+  const [analysisExecutionProfileId, setAnalysisExecutionProfileId] = useState("");
   const [selectedAnalysisRunId, setSelectedAnalysisRunId] = useState("");
   const filterScrollRef = useRef<HTMLDivElement>(null);
   const searchableCodingFieldsRef = useRef<HTMLElement>(null);
@@ -677,6 +679,15 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const effectiveAnalysisTask = publishedAnalysisTasks.find((task) => task.id === analysisTaskId) ?? publishedAnalysisTasks[0];
   const effectiveAnalysisTaskId = effectiveAnalysisTask?.id ?? "";
   const effectiveAnalysisProvider = effectiveAnalysisTask?.task_type === "QUESTION_ANSWERING" ? publishedTaskProvider(effectiveAnalysisTask) : null;
+  const analysisExecutionProfiles = useQuery({
+    queryKey: ["analysis-task-execution-profiles", matterId, effectiveAnalysisTaskId, effectiveAnalysisTask?.published_version],
+    queryFn: () => coreApi<AnalysisTaskExecutionProfileRead[]>(`/v1/matters/${matterId}/analysis-tasks/${effectiveAnalysisTaskId}/versions/${effectiveAnalysisTask?.published_version}/execution-profiles`),
+    enabled: analysisDialogOpen
+      && effectiveAnalysisTask?.task_type === "QUESTION_ANSWERING"
+      && effectiveAnalysisTask.published_version !== null,
+  });
+  const effectiveAnalysisExecutionProfile = (analysisExecutionProfiles.data ?? [])
+    .find((profile) => profile.id === analysisExecutionProfileId) ?? null;
   const effectiveClassificationVersion = effectiveAnalysisTask?.task_type === "CLASSIFICATION"
     ? effectiveAnalysisTask.published_version_details
     : null;
@@ -687,6 +698,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   );
   const openAnalysisDialog = (taskId?: string) => {
     setAnalysisTaskId(taskId ?? "");
+    setAnalysisExecutionProfileId("");
     setAnalysisDialogOpen(true);
   };
   const viewSearchableCodingFields = () => {
@@ -713,7 +725,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       }
       const created = await coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${batchId}/analysis-runs`, {
         method: "POST",
-        body: JSON.stringify({ matter_analysis_task_id: effectiveAnalysisTask.id }),
+        body: JSON.stringify({
+          matter_analysis_task_id: effectiveAnalysisTask.id,
+          ...(effectiveAnalysisExecutionProfile ? { execution_profile_id: effectiveAnalysisExecutionProfile.id } : {}),
+        }),
       });
       return { taskType: "QUESTION_ANSWERING" as const, created };
     },
@@ -921,7 +936,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
           <DialogHeader><DialogTitle>Run analysis against this batch</DialogTitle><DialogDescription>Select a published question-answering or classification Analysis Task. Its exact version, model configuration, and every document in this batch will be frozen into an isolated run.</DialogDescription></DialogHeader>
           {analysisTasks.isPending ? <div className="space-y-2 py-3"><Skeleton className="h-10" /><Skeleton className="h-16" /></div>
             : analysisTasks.error ? <QueryError message={analysisTasks.error.message} />
-            : publishedAnalysisTasks.length ? <div className="space-y-3 py-2"><label className="space-y-1.5 text-sm font-medium" htmlFor="batch-analysis-task"><span>Published task</span><Select value={effectiveAnalysisTaskId} onValueChange={setAnalysisTaskId}><SelectTrigger id="batch-analysis-task"><SelectValue placeholder="Select an analysis task" /></SelectTrigger><SelectContent>{publishedAnalysisTasks.map((task) => { const typeLabel = task.task_type === "CLASSIFICATION" ? "Classifier" : publishedTaskProvider(task).label; return <SelectItem key={task.id} value={task.id}>{task.name} · published v{task.published_version} · {typeLabel}</SelectItem>; })}</SelectContent></Select></label>{effectiveAnalysisProvider ? <div className="rounded-lg border bg-muted/30 p-3 text-sm"><p><span className="text-muted-foreground">Decision provider:</span> <strong>{effectiveAnalysisProvider.label}</strong></p><p className="mt-1"><span className="text-muted-foreground">Model:</span> <strong>{effectiveAnalysisProvider.model ?? "Provider default"}</strong></p></div> : null}{effectiveClassificationVersion ? <div className="rounded-lg border bg-muted/30 p-3 text-sm"><p><span className="text-muted-foreground">Analysis type:</span> <strong>Classification</strong></p><p className="mt-1"><span className="text-muted-foreground">Pinned model version:</span> <strong className="break-all font-mono text-xs">{effectiveClassificationVersion.classification_model_version_id ?? "Unavailable"}</strong></p><p className="mt-1"><span className="text-muted-foreground">Document embeddings:</span> <strong className="break-all font-mono text-xs">{effectiveClassificationEmbeddingJobId ?? "Unavailable"}</strong></p></div> : null}{effectiveAnalysisTask?.task_type === "CLASSIFICATION" && !effectiveClassificationEmbeddingJobId ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5">This published classifier does not identify the compatible embedding job required for scoring. Republish the task after activating a model version with a valid feature snapshot.</p> : null}{hasUnpublishedAnalysisDraft ? <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5"><p className="font-semibold">A newer draft is not published</p><p className="mt-1 text-muted-foreground">This run will use published v{effectiveAnalysisTask?.published_version}, not draft v{effectiveAnalysisTask?.current_version}. Publish the draft from Analysis tasks first if it contains the corrected guidance.</p>{matter.data ? <Button asChild className="mt-2" size="sm" variant="outline"><Link href={matterHref(matter.data.client_id, matterId, "analysis")}>Open Analysis tasks</Link></Button> : null}</div> : null}<p className="rounded-lg bg-muted p-3 text-xs leading-5 text-muted-foreground">Each run creates an isolated result set. It does not update final matter tags.</p></div>
+            : publishedAnalysisTasks.length ? <div className="space-y-3 py-2"><label className="space-y-1.5 text-sm font-medium" htmlFor="batch-analysis-task"><span>Published task</span><Select value={effectiveAnalysisTaskId} onValueChange={(taskId) => { setAnalysisTaskId(taskId); setAnalysisExecutionProfileId(""); }}><SelectTrigger id="batch-analysis-task"><SelectValue placeholder="Select an analysis task" /></SelectTrigger><SelectContent>{publishedAnalysisTasks.map((task) => { const typeLabel = task.task_type === "CLASSIFICATION" ? "Classifier" : publishedTaskProvider(task).label; return <SelectItem key={task.id} value={task.id}>{task.name} · published v{task.published_version} · {typeLabel}</SelectItem>; })}</SelectContent></Select></label>{effectiveAnalysisProvider ? <label className="space-y-1.5 text-sm font-medium" htmlFor="batch-analysis-profile"><span>Execution profile / model</span><Select value={analysisExecutionProfileId || "task-default"} onValueChange={(profileId) => setAnalysisExecutionProfileId(profileId === "task-default" ? "" : profileId)}><SelectTrigger id="batch-analysis-profile"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="task-default">Published task default · {effectiveAnalysisProvider.label} · {effectiveAnalysisProvider.model ?? "configured model"}</SelectItem>{(analysisExecutionProfiles.data ?? []).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name} · {profile.decision_provider === "OPENAI_DECISIONS" ? "OpenAI Decisions" : "Jev"} · {profile.resolved_model}</SelectItem>)}</SelectContent></Select>{analysisExecutionProfiles.isPending ? <span className="block text-xs font-normal text-muted-foreground">Loading available model profiles…</span> : null}{analysisExecutionProfiles.error ? <span className="block text-xs font-normal text-destructive">Model profiles could not be loaded. The published default remains available.</span> : null}</label> : null}{effectiveAnalysisProvider ? <div className="rounded-lg border bg-muted/30 p-3 text-sm"><p><span className="text-muted-foreground">Decision provider:</span> <strong>{effectiveAnalysisExecutionProfile?.decision_provider === "OPENAI_DECISIONS" ? "OpenAI Decisions" : effectiveAnalysisExecutionProfile ? "Jev" : effectiveAnalysisProvider.label}</strong></p><p className="mt-1"><span className="text-muted-foreground">Model:</span> <strong>{effectiveAnalysisExecutionProfile?.resolved_model ?? effectiveAnalysisProvider.model ?? "Configured model"}</strong></p></div> : null}{effectiveClassificationVersion ? <div className="rounded-lg border bg-muted/30 p-3 text-sm"><p><span className="text-muted-foreground">Analysis type:</span> <strong>Classification</strong></p><p className="mt-1"><span className="text-muted-foreground">Pinned model version:</span> <strong className="break-all font-mono text-xs">{effectiveClassificationVersion.classification_model_version_id ?? "Unavailable"}</strong></p><p className="mt-1"><span className="text-muted-foreground">Document embeddings:</span> <strong className="break-all font-mono text-xs">{effectiveClassificationEmbeddingJobId ?? "Unavailable"}</strong></p></div> : null}{effectiveAnalysisTask?.task_type === "CLASSIFICATION" && !effectiveClassificationEmbeddingJobId ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5">This published classifier does not identify the compatible embedding job required for scoring. Republish the task after activating a model version with a valid feature snapshot.</p> : null}{hasUnpublishedAnalysisDraft ? <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5"><p className="font-semibold">A newer draft is not published</p><p className="mt-1 text-muted-foreground">This run will use published v{effectiveAnalysisTask?.published_version}, not draft v{effectiveAnalysisTask?.current_version}. Publish the draft from Analysis tasks first if it contains the corrected guidance.</p>{matter.data ? <Button asChild className="mt-2" size="sm" variant="outline"><Link href={matterHref(matter.data.client_id, matterId, "analysis")}>Open Analysis tasks</Link></Button> : null}</div> : null}<p className="rounded-lg bg-muted p-3 text-xs leading-5 text-muted-foreground">Each run creates an isolated result set. It does not update final matter tags.</p></div>
               : <div className="rounded-lg border border-dashed p-4 text-sm"><p className="font-semibold">No published Analysis Tasks</p><p className="mt-1 text-muted-foreground">Generate, validate, and publish a task version before launching a batch run.</p>{matter.data ? <Button asChild className="mt-3" size="sm" variant="outline"><Link href={matterHref(matter.data.client_id, matterId, "analysis")}>Open Analysis tasks</Link></Button> : null}</div>}
           <DialogFooter><Button type="button" variant="outline" onClick={() => setAnalysisDialogOpen(false)} disabled={launchAnalysis.isPending}>Cancel</Button><Button type="button" onClick={() => launchAnalysis.mutate()} disabled={!effectiveAnalysisTaskId || effectiveAnalysisTask?.task_type === "CLASSIFICATION" && !effectiveClassificationEmbeddingJobId || launchAnalysis.isPending}>{launchAnalysis.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}{launchAnalysis.isPending ? "Queueing…" : `Run on ${batch.data?.document_count.toLocaleString() ?? 0} documents`}</Button></DialogFooter>
         </DialogContent>

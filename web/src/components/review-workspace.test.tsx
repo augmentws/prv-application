@@ -259,6 +259,33 @@ describe("ReviewWorkspace", () => {
         return { field, interval: "month", buckets: [{ start: "2024-01-01T00:00:00Z", count: 1 }] } as never;
       }
       if (path === "/v1/matters/matter-1/documents/document-1/collection-item") return collectionItem as never;
+      if (path === "/v1/matters/matter-1/documents/document-2/collection-item") return {
+        ...collectionItem,
+        id: "item-2",
+        source_item_id: "source-2",
+        original_filename: "litigation-questions.doc",
+        original_extension: "doc",
+        original_source_path: "/mail/inbox/litigation-questions.doc",
+        record_type: "FILE",
+        parent_collection_item_id: "item-1",
+        email: null,
+      } as never;
+      if (path === "/v1/matters/matter-1/documents/document-1/family") return {
+        family_id: "family-1",
+        current_document_id: "document-1",
+        current_role: "PARENT",
+        parent: null,
+        children: [{ matter_document_id: "document-2", collection_item_id: "item-2", identifier: "ATT-001", display_name: "litigation-questions.doc", record_type: "FILE", relationship: "ATTACHMENT", is_current: false, available_in_matter: true }],
+        unavailable_member_count: 0,
+      } as never;
+      if (path === "/v1/matters/matter-1/documents/document-2/family") return {
+        family_id: "family-1",
+        current_document_id: "document-2",
+        current_role: "ATTACHMENT",
+        parent: { matter_document_id: "document-1", collection_item_id: "item-1", identifier: "PARENT-001", display_name: "Budget update", record_type: "EMAIL", relationship: "PARENT", is_current: false, available_in_matter: true },
+        children: [{ matter_document_id: "document-2", collection_item_id: "item-2", identifier: "ATT-001", display_name: "litigation-questions.doc", record_type: "FILE", relationship: "ATTACHMENT", is_current: true, available_in_matter: true }],
+        unavailable_member_count: 0,
+      } as never;
       if (path.endsWith("/documents/document-1/coding-history")) return {
         direct: [{
           metadata_event_id: "event-direct-1", metadata_definition_id: "definition-responsive", field_key: "responsiveness", field_display_name: "Responsiveness",
@@ -277,6 +304,7 @@ describe("ReviewWorkspace", () => {
         { matter_document_id: "document-1", metadata_definition_id: "definition-responsive", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", cardinality: "SINGLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null },
         { matter_document_id: "document-1", metadata_definition_id: "definition-tr2016", key: "tr2016_facets", display_name: "Trec2016", type: "TEXT", cardinality: "MULTIPLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null },
       ] as never;
+      if (path.endsWith("/documents/document-2/metadata-values")) return [] as never;
       if (path.endsWith("/metadata-values/definition-tr2016/events") && init?.method === "POST") {
         const payload = JSON.parse(String(init.body)) as { operation: "CLEAR" | "ADD"; value?: string };
         tr2016EventSequence += 1;
@@ -314,6 +342,12 @@ describe("ReviewWorkspace", () => {
     renderWorkspace({ initialPage: 2 });
 
     expect(await screen.findByText("Budget update")).toBeInTheDocument();
+    const familyNavigation = await screen.findByRole("navigation", { name: "Document family navigation" });
+    await user.click(within(familyNavigation).getByRole("button", { name: "Open Attachment 1: litigation-questions.doc" }));
+    const attachmentFamilyNavigation = await screen.findByRole("navigation", { name: "Document family navigation" });
+    expect(within(attachmentFamilyNavigation).getByText("Attachment 1: litigation-questions.doc (current)")).toBeInTheDocument();
+    await user.click(within(attachmentFamilyNavigation).getByRole("button", { name: "Open Parent: Budget update" }));
+    await screen.findByRole("button", { name: "Open Attachment 1: litigation-questions.doc" });
     expect(screen.getByRole("main")).toHaveClass("fixed", "inset-0", "overscroll-none");
     expect(screen.getByRole("main")).toHaveStyle({ overflow: "clip" });
     const searchFilters = screen.getByRole("complementary", { name: "Search filters" });

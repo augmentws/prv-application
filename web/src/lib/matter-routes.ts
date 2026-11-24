@@ -59,7 +59,7 @@ export function reviewProgramFinalAlignmentHref(clientId: string, matterId: stri
   return `${matterHref(clientId, matterId, "review-programs")}/${programId}/runs/${runId}/final-alignment`;
 }
 
-export type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "SEARCH_EXPORTS";
+export type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "CODING_COMPARISONS" | "SEARCH_EXPORTS";
 
 /** Every job type, in menu order, with its route slug. */
 export const MATTER_JOB_TYPES: { type: MatterJobType; slug: string; label: string }[] = [
@@ -69,6 +69,7 @@ export const MATTER_JOB_TYPES: { type: MatterJobType; slug: string; label: strin
   { type: "DOCUMENT_IMPORTS", slug: "imports", label: "Document imports" },
   { type: "QUESTION_ANSWERING", slug: "question-answering", label: "Question answering" },
   { type: "CLASSIFICATION_ANALYSIS", slug: "classification-analysis", label: "Classification analysis" },
+  { type: "CODING_COMPARISONS", slug: "coding-comparisons", label: "Coding comparisons" },
   { type: "SEARCH_EXPORTS", slug: "search-exports", label: "Search exports" },
 ];
 

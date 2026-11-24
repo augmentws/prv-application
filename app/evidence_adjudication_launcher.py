@@ -42,6 +42,7 @@ from app.evidence_first_artifacts import (
     EvidenceEvaluationPlan,
     load_compacted_observations_bytes,
     load_evaluation_plan_bytes,
+    scope_family_observation_results,
 )
 from app.evidence_first_contracts import (
     UNMAPPED_CRITERION_KEY,
@@ -52,7 +53,7 @@ from app.evidence_first_contracts import (
 from app.evidence_first_launcher import _require_shadow_operator
 from app.evidence_first_managed import require_evidence_shadow_enabled
 from app.execution_accounting import refresh_workflow_execution_usage
-from app.model_execution import content_hash
+from app.model_execution import content_hash, provider_compatible_model_settings
 from app.models import (
     Matter,
     MatterDefinitionAssessmentRun,
@@ -128,7 +129,12 @@ def _role_binding(skill_version: SkillDefinitionVersion, *, resolved_model: str)
         prompt_hash=content_hash(skill_version.instructions),
         application_schema_hash=content_hash(application_schema),
         provider_schema_hash=content_hash(admitted_schema),
-        model_settings_hash=content_hash(skill_version.model_policy),
+        model_settings_hash=content_hash(
+            provider_compatible_model_settings(
+                skill_version.model_policy,
+                resolved_model=resolved_model,
+            )
+        ),
         capability_profile_hash=content_hash(
             {
                 "provider": provider,
@@ -171,6 +177,7 @@ def prepare_adjudication_shadow_launch(
     actor_user_id: uuid.UUID,
     assessment_id: uuid.UUID,
     observations_artifact_id: uuid.UUID,
+    target_matter_document_id: uuid.UUID | None = None,
     adjudication_model: str | None = None,
     settings: Settings | None = None,
 ) -> PreparedAdjudicationShadowLaunch:
@@ -220,6 +227,14 @@ def prepare_adjudication_shadow_launch(
         or extraction_plan.criterion_catalog_hash != catalog.catalog_hash
     ):
         raise ValueError("Evidence observations do not belong to the selected frozen assessment")
+    matter_document_id = extraction_plan.matter_document_id
+    if target_matter_document_id is not None:
+        observations = scope_family_observation_results(
+            extraction_plan,
+            observations,
+            target_document_id=target_matter_document_id,
+        )
+        matter_document_id = target_matter_document_id
 
     resolved = resolve_workflow_skill_bindings(
         db,
@@ -249,7 +264,7 @@ def prepare_adjudication_shadow_launch(
         tenant_id=matter.client.tenant_id,
         client_id=matter.client_id,
         matter_id=matter.id,
-        matter_document_id=extraction_plan.matter_document_id,
+        matter_document_id=matter_document_id,
     )
     launch_key = content_hash(
         {
@@ -665,6 +680,13 @@ async def execute_prepared_adjudication_shadow(
     )
     db.commit()
     dispositions = Counter(value.disposition for value in outcome.result.criterion_decisions)
+    criterion_dispositions = {
+        value.criterion_key: value.disposition
+        for value in outcome.result.criterion_decisions
+    }
+    criterion_signal_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for observation in prepared.observations.observations:
+        criterion_signal_counts[observation.criterion_key][observation.signal_type] += 1
     return {
         "result_version": ADJUDICATION_SHADOW_LAUNCHER_VERSION,
         "mode": "EXECUTE",
@@ -688,6 +710,11 @@ async def execute_prepared_adjudication_shadow(
         "material_adjustment_count": outcome.result.material_adjustment_count,
         "criterion_decision_count": len(outcome.result.criterion_decisions),
         "disposition_counts": dict(sorted(dispositions.items())),
+        "criterion_dispositions": dict(sorted(criterion_dispositions.items())),
+        "criterion_signal_counts": {
+            criterion_key: dict(sorted(counts.items()))
+            for criterion_key, counts in sorted(criterion_signal_counts.items())
+        },
         "document_decision_status": document_result.status,
         "determination": (document_result.decision.determination if document_result.decision else None),
         "decision_confidence": (document_result.decision.confidence if document_result.decision else None),

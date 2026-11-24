@@ -19,6 +19,7 @@ from app.models import (
     MetadataDefinition,
     MetadataEvent,
     SearchIndexGeneration,
+    SearchProjectionOperation,
     User,
 )
 
@@ -505,7 +506,6 @@ def test_bulk_tag_batch_uses_metadata_ledger_and_is_idempotent(
     db.commit()
 
     monkeypatch.setattr(bulk_tags, "SessionLocal", TestingSessionLocal)
-    monkeypatch.setattr(bulk_tags, "_ensure_batch_search_operation", lambda *_: uuid.uuid4())
     monkeypatch.setattr(bulk_tags, "process_search_operation", lambda *_: None)
 
     first = bulk_tags.process_bulk_tag_batch(batch.id)
@@ -532,3 +532,14 @@ def test_bulk_tag_batch_uses_metadata_ledger_and_is_idempotent(
         )
         assert len(responsiveness_rows) == 2
         assert {row.value_text for row in responsiveness_rows} == {"responsive"}
+        operation = verification.scalar(
+            select(SearchProjectionOperation).where(
+                SearchProjectionOperation.workflow_id == f"bulk-tag-index:{batch.id}"
+            )
+        )
+        assert operation is not None
+        assert operation.payload["projection_scope"] == "MATTER_CODING_FIELDS"
+        assert set(operation.payload["metadata_definition_ids"]) == {
+            str(definition.id),
+            str(responsiveness_definition.id),
+        }

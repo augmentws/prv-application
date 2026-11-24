@@ -3,12 +3,40 @@ from copy import deepcopy
 
 DOCUMENT_ANALYSIS_PIPELINE_VERSION = "document-analysis-pipeline-v4"
 
+_UUID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_DOCUMENT_METADATA_CITATION_PATTERN = (
+    r"metadata:(?:original_filename|title|email\.(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*))"
+)
+_FAMILY_EVIDENCE_CITATION_PATTERN = (
+    rf"family:{_UUID_PATTERN}:(?:role|original_filename|text|email\."
+    r"(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*))"
+)
+_IDENTITY_EVIDENCE_CITATION_PATTERN = rf"identity:{_UUID_PATTERN}:signal"
+_PARAGRAPH_CITATION_PATTERN = r"¶[1-9][0-9]*"
+_BASE_CONTEXT_CITATION_PATTERN = (
+    rf"(?:{_DOCUMENT_METADATA_CITATION_PATTERN}|{_FAMILY_EVIDENCE_CITATION_PATTERN}|"
+    rf"{_IDENTITY_EVIDENCE_CITATION_PATTERN})"
+)
+_BASE_EVIDENCE_CITATION_PATTERN = (
+    rf"(?:{_PARAGRAPH_CITATION_PATTERN}|{_BASE_CONTEXT_CITATION_PATTERN})"
+)
+_FAMILY_MEMBER_EVIDENCE_CITATION_PATTERN = (
+    rf"document:{_UUID_PATTERN}:{_BASE_EVIDENCE_CITATION_PATTERN}"
+)
+_FAMILY_MEMBER_CONTEXT_CITATION_PATTERN = (
+    rf"document:{_UUID_PATTERN}:{_BASE_CONTEXT_CITATION_PATTERN}"
+)
+
+EVIDENCE_PARAGRAPH_CITATION_PATTERN = (
+    rf"^(?:{_PARAGRAPH_CITATION_PATTERN}|"
+    rf"document:{_UUID_PATTERN}:{_PARAGRAPH_CITATION_PATTERN})$"
+)
+
 EVIDENCE_METADATA_CITATION_PATTERN = (
-    r"^metadata:(?:original_filename|title|email\.(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*))$"
+    rf"^(?:{_BASE_CONTEXT_CITATION_PATTERN}|{_FAMILY_MEMBER_CONTEXT_CITATION_PATTERN})$"
 )
 EVIDENCE_CITATION_PATTERN = (
-    r"^(?:¶[1-9][0-9]*|metadata:(?:original_filename|title|email\."
-    r"(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*)))$"
+    rf"^(?:{_BASE_EVIDENCE_CITATION_PATTERN}|{_FAMILY_MEMBER_EVIDENCE_CITATION_PATTERN})$"
 )
 
 
@@ -206,12 +234,12 @@ COVERAGE_SCHEMA = {
         "analyzed_paragraph_ids": {
             "type": "array",
             "uniqueItems": True,
-            "items": {"type": "string", "pattern": "^¶[1-9][0-9]*$"},
+            "items": {"type": "string", "pattern": EVIDENCE_PARAGRAPH_CITATION_PATTERN},
         },
         "partial_paragraph_ids": {
             "type": "array",
             "uniqueItems": True,
-            "items": {"type": "string", "pattern": "^¶[1-9][0-9]*$"},
+            "items": {"type": "string", "pattern": EVIDENCE_PARAGRAPH_CITATION_PATTERN},
         },
         "omitted_ranges": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
     },

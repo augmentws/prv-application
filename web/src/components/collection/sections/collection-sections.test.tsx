@@ -63,11 +63,18 @@ function postedImport() {
   return JSON.parse(String(call?.[1]?.body));
 }
 
-async function addToMatter(user: ReturnType<typeof userEvent.setup>, trigger: string) {
+async function addToMatter(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: string,
+  includeCompleteFamilies = true,
+) {
   // The button stays disabled until the client's matters (and, for Documents, the results) have loaded.
   const button = screen.getByRole("button", { name: trigger });
   await waitFor(() => expect(button).toBeEnabled());
   await user.click(button);
+  const familyCheckbox = await screen.findByRole("checkbox", { name: /Include complete families/ });
+  expect(familyCheckbox).toBeChecked();
+  if (!includeCompleteFamilies) await user.click(familyCheckbox);
   await user.click(await screen.findByRole("combobox", { name: "Destination matter" }));
   await user.click(await screen.findByRole("option", { name: "Trec-JBush" }));
   await user.click(screen.getByRole("button", { name: "Start job" }));
@@ -122,10 +129,22 @@ describe("DocumentsSection", () => {
 
     expect(postedImport()).toMatchObject({
       source_collection_id: "collection-1",
-      selection: { mode: "QUERY", q: "memo", file_date_from: "2001-01-01T00:00:00.000Z", file_date_to: "2001-01-31T23:59:59.999Z" },
+      selection: { mode: "QUERY", include_complete_families: true, q: "memo", file_date_from: "2001-01-01T00:00:00.000Z", file_date_to: "2001-01-31T23:59:59.999Z" },
       selection_summary: "Current collection search and filters",
     });
     expect(navigation.push).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1/jobs/imports?job=job-1");
+  });
+
+  it("allows family expansion to be disabled", async () => {
+    const user = userEvent.setup();
+    renderInCollection(<DocumentsSection />);
+    await screen.findByRole("button", { name: "memo.pdf" });
+
+    await addToMatter(user, "Add all matching", false);
+
+    expect(postedImport()).toMatchObject({
+      selection: { mode: "QUERY", include_complete_families: false },
+    });
   });
 });
 
@@ -152,7 +171,7 @@ describe("CustodiansSection", () => {
     await user.click(screen.getByRole("checkbox", { name: "Select Jeb Bush" }));
     await addToMatter(user, "Add documents to matter");
 
-    expect(postedImport()).toMatchObject({ selection: { mode: "QUERY", custodian_ids: ["cust-1"] }, selection_summary: "1 selected custodian" });
+    expect(postedImport()).toMatchObject({ selection: { mode: "QUERY", include_complete_families: true, custodian_ids: ["cust-1"] }, selection_summary: "1 selected custodian" });
   });
 });
 

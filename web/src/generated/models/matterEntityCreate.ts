@@ -6,10 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MatterEntityCreateEntityType } from './matterEntityCreateEntityType';
+import type { MatterEntityCreateOrganizationCategory } from './matterEntityCreateOrganizationCategory';
 import type { MatterEntityCreateStatus } from './matterEntityCreateStatus';
 
 export interface MatterEntityCreate {
   entity_type: MatterEntityCreateEntityType;
+  organization_category?: MatterEntityCreateOrganizationCategory;
   display_name?: string | null;
   email?: string | null;
   title?: string | null;

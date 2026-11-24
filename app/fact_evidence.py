@@ -86,6 +86,7 @@ def load_document_text(
     )
     if document is None:
         raise FactEvidenceError("Document was not found in this matter")
+    db.commit()
     try:
         source = get_preferred_text_source(
             collection_item_id=document.collection_item_id,
@@ -173,7 +174,5 @@ def verify_evidence(
         raise FactEvidenceError("A quote cannot be blank")
     if len(quote) > MAX_QUOTE_CHARACTERS:
         raise FactEvidenceError(f"A quote cannot exceed {MAX_QUOTE_CHARACTERS:,} characters")
-    document = load_document_text(
-        db, matter=matter, matter_document_id=matter_document_id, actor_user_id=actor_user_id
-    )
+    document = load_document_text(db, matter=matter, matter_document_id=matter_document_id, actor_user_id=actor_user_id)
     return verify_quote(document, paragraph_id=paragraph_id, quote=quote, occurrence=occurrence, stance=stance)

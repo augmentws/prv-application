@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -38,7 +39,11 @@ from app.models import (
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    MatterDocument,
     MatterEmbeddingJob,
+    MatterEntity,
+    MatterEntityDomain,
+    MatterEntityRelationship,
     MetadataDefinition,
     Notification,
     ReviewBatch,
@@ -73,15 +78,20 @@ from app.review_programs import (
     _classifier_positive_coverage_population_count,
     _classifier_positive_coverage_retry_input,
     _classifier_training_definition_ids,
+    _completed_human_review_document_ids_by_definition,
     _current_usable_qa_results,
     _final_alignment_population_ids,
     _final_alignment_report_requires_recalculation,
     _final_alignment_source_status,
     _is_usable_qa_coding_result,
+    _latest_definition_assessment,
     _negative_population_qc_failure_is_tolerable,
+    _refresh_issue_support_action_contract,
+    _resolve_all_model_code_field_counts,
     _resume_classifier_positive_coverage_retry,
     _resume_negative_population_qc_launch_failure,
     _review_program_failure_allows_retry,
+    _training_label_count_preview,
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
@@ -93,6 +103,8 @@ from app.review_programs import (
 from app.review_workflow_templates import (
     FIRST_PASS_REVIEW,
     FIRST_PASS_REVIEW_V1,
+    PRIVILEGE_REVIEW,
+    PRIVILEGE_REVIEW_V1,
     get_review_workflow_template,
 )
 from app.reviewer_coding import ReviewerFieldReplacement, append_reviewer_coding_revision
@@ -288,9 +300,10 @@ def test_first_pass_template_contract_locks_batching_policy() -> None:
     assert discovery.requires_human_gate is True
     legacy = get_review_workflow_template("FIRST_PASS_REVIEW", version=1)
     assert legacy is FIRST_PASS_REVIEW_V1
-    assert next(
-        stage for stage in legacy.stages if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
-    ).batching_policy == "PARTITIONED_SET"
+    assert (
+        next(stage for stage in legacy.stages if stage.key == "CLASSIFIER_POSITIVE_COVERAGE").batching_policy
+        == "PARTITIONED_SET"
+    )
 
 
 def test_review_program_permissions_are_assigned_to_expected_roles() -> None:
@@ -300,6 +313,105 @@ def test_review_program_permissions_are_assigned_to_expected_roles() -> None:
     assert "review_program.view" in SYSTEM_ROLE_BY_KEY["READ_ONLY"].permission_keys
 
 
+def test_completed_human_review_exclusions_are_specific_to_target_field(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    created, _, matter, _token = review_program_workspace(client, root_token)
+    user_id = uuid.UUID(created["initial_admin"]["id"])
+    document_ids = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=3)]
+
+    with TestingSessionLocal() as db:
+        target = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == uuid.UUID(matter["id"]),
+                MetadataDefinition.key == "privilege",
+            )
+        )
+        assert target is not None
+        target_value = next(item["key"] for item in target.allowed_values or [] if item.get("active", True))
+        unrelated = MetadataDefinition(
+            matter_id=uuid.UUID(matter["id"]),
+            key=f"trec_priv_coding_{uuid.uuid4().hex[:8]}",
+            display_name="TREC privilege coding",
+            type="BOOLEAN",
+            cardinality="SINGLE",
+            value_source="ASSERTED",
+            assertion_policy="IMMEDIATE",
+            resolution_policy="EXPLICIT_ONLY",
+            searchable=True,
+            facetable=True,
+            normalize_to_lowercase=False,
+            reviewable=True,
+            ai_assignable=True,
+            status="ACTIVE",
+        )
+        batch = ReviewBatch(
+            matter_id=uuid.UUID(matter["id"]),
+            name="Field-specific exclusion test",
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={"type": "EXPLICIT_DOCUMENTS"},
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"field-specific-exclusion:{uuid.uuid4()}",
+            document_count=len(document_ids),
+            created_by_user_id=user_id,
+        )
+        db.add_all([unrelated, batch])
+        db.flush()
+        db.add_all(
+            ReviewBatchDocument(
+                review_batch_id=batch.id,
+                matter_document_id=document_id,
+                sequence_number=ordinal,
+            )
+            for ordinal, document_id in enumerate(document_ids, start=1)
+        )
+        coding = ReviewBatchReviewerCoding(
+            review_batch_id=batch.id,
+            reviewer_user_id=user_id,
+            revision=0,
+        )
+        db.add(coding)
+        db.flush()
+        common = {
+            "db": db,
+            "coding": coding,
+            "actor_user_id": user_id,
+            "tenant_id": uuid.UUID(created["tenant"]["id"]),
+            "matter_id": uuid.UUID(matter["id"]),
+        }
+        append_reviewer_coding_revision(
+            **common,
+            matter_document_id=document_ids[0],
+            status="COMPLETED",
+            field_replacements=(ReviewerFieldReplacement(definition=unrelated, values=(True,)),),
+        )
+        append_reviewer_coding_revision(
+            **common,
+            matter_document_id=document_ids[1],
+            status="COMPLETED",
+            field_replacements=(ReviewerFieldReplacement(definition=target, values=(target_value,)),),
+        )
+        append_reviewer_coding_revision(
+            **common,
+            matter_document_id=document_ids[2],
+            status="IN_PROGRESS",
+            field_replacements=(ReviewerFieldReplacement(definition=target, values=(target_value,)),),
+        )
+        db.flush()
+
+        excluded = _completed_human_review_document_ids_by_definition(
+            db,
+            matter_id=uuid.UUID(matter["id"]),
+            metadata_definition_ids={target.id, unrelated.id},
+        )
+
+    assert excluded[target.id] == {document_ids[1]}
+    assert excluded[unrelated.id] == {document_ids[0]}
+
+
 def test_create_multiple_independent_programs_from_one_template(
     client: TestClient,
     root_token: str,
@@ -307,8 +419,8 @@ def test_create_multiple_independent_programs_from_one_template(
     created, _, matter, token = review_program_workspace(client, root_token)
     templates = client.get("/v1/review-workflow-templates", headers=auth(token))
     assert templates.status_code == 200, templates.text
-    assert [template["key"] for template in templates.json()] == ["FIRST_PASS_REVIEW"]
-    template = templates.json()[0]
+    assert [template["key"] for template in templates.json()] == ["FIRST_PASS_REVIEW", "PRIVILEGE_REVIEW"]
+    template = next(item for item in templates.json() if item["key"] == "FIRST_PASS_REVIEW")
     assert template["content_hash"] == FIRST_PASS_REVIEW.content_hash
     assert {stage["key"] for stage in template["stages"] if stage["batching_policy"] == "AD_HOC_BATCH"} == {
         "DEFINITION_ASSESSMENT",
@@ -361,6 +473,451 @@ def test_create_multiple_independent_programs_from_one_template(
         )
         assert audit is not None
         assert audit.details["matter_id"] == matter["id"]
+
+
+def test_create_privilege_program_freezes_population_and_identity_context(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    created, _, matter, token = review_program_workspace(client, root_token)
+    user_id = uuid.UUID(created["initial_admin"]["id"])
+    document_ids = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=3)]
+
+    with TestingSessionLocal() as db:
+        target = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == uuid.UUID(matter["id"]),
+                MetadataDefinition.key == "privilege",
+            )
+        )
+        assert target is not None
+        law_firm = MatterEntity(
+            matter_id=uuid.UUID(matter["id"]),
+            entity_type="ORGANIZATION",
+            organization_category="LAW_FIRM",
+            display_name="Example Law LLP",
+            normalized_name="example law llp",
+            status="CONFIRMED",
+            created_by_user_id=user_id,
+        )
+        client_entity = MatterEntity(
+            matter_id=uuid.UUID(matter["id"]),
+            entity_type="ORGANIZATION",
+            organization_category="CORPORATION",
+            display_name="Example Client",
+            normalized_name="example client",
+            status="CONFIRMED",
+            created_by_user_id=user_id,
+        )
+        batch = ReviewBatch(
+            matter_id=uuid.UUID(matter["id"]),
+            name="Responsive population",
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={"type": "EXPLICIT_DOCUMENTS"},
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"privilege-foundation:{uuid.uuid4()}",
+            document_count=len(document_ids),
+            created_by_user_id=user_id,
+        )
+        db.add_all([law_firm, client_entity, batch])
+        db.flush()
+        db.add_all(
+            [
+                MatterEntity(
+                    matter_id=uuid.UUID(matter["id"]),
+                    parent_id=law_firm.id,
+                    entity_type="ORGANIZATION",
+                    display_name="Example Law",
+                    normalized_name="example law",
+                    created_by_user_id=user_id,
+                ),
+                MatterEntityDomain(
+                    matter_id=uuid.UUID(matter["id"]),
+                    entity_id=law_firm.id,
+                    domain="examplelaw.com",
+                    normalized_domain="examplelaw.com",
+                    created_by_user_id=user_id,
+                ),
+                MatterEntityRelationship(
+                    matter_id=uuid.UUID(matter["id"]),
+                    source_entity_id=law_firm.id,
+                    target_entity_id=client_entity.id,
+                    relationship_type="OUTSIDE_COUNSEL_FOR",
+                    status="CONFIRMED",
+                    created_by_user_id=user_id,
+                    decided_by_user_id=user_id,
+                    decided_at=utcnow(),
+                ),
+            ]
+        )
+        db.add_all(
+            ReviewBatchDocument(
+                review_batch_id=batch.id,
+                matter_document_id=document_id,
+                sequence_number=ordinal,
+            )
+            for ordinal, document_id in enumerate(document_ids, start=1)
+        )
+        db.commit()
+        batch_id = batch.id
+        target_id = target.id
+        collection_item_by_document = dict(
+            db.execute(
+                select(MatterDocument.id, MatterDocument.collection_item_id).where(
+                    MatterDocument.id.in_(document_ids)
+                )
+            ).all()
+        )
+
+    stored_payloads: dict[str, dict] = {}
+    stored_payloads_by_id: dict[uuid.UUID, bytes] = {}
+
+    def store_artifact(**kwargs):
+        content = kwargs["content"].read()
+        artifact_id = uuid.uuid4()
+        stored_payloads[kwargs["artifact_type"].value] = json.loads(content)
+        stored_payloads_by_id[artifact_id] = content
+        return (
+            SimpleNamespace(
+                artifact_id=artifact_id,
+                content_hash=kwargs["content_hash"],
+                byte_length=kwargs["byte_length"],
+            ),
+            True,
+        )
+
+    monkeypatch.setattr("app.privilege_review_programs.store_workflow_artifact", store_artifact)
+    response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={
+            "template_key": "PRIVILEGE_REVIEW",
+            "key": "production-privilege-review",
+            "name": "Production privilege review",
+            "privilege_review": {
+                "review_batch_ids": [str(batch_id)],
+                "target_metadata_definition_id": str(target_id),
+                "review_policy": "LLM_THEN_HUMAN",
+                "keep_families_together": True,
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    program = response.json()
+    assert program["template_key"] == PRIVILEGE_REVIEW.key
+    assert program["target_metadata_definition_id"] == str(target_id)
+    configuration = program["current_version"]["configuration_snapshot"]["privilege_review"]
+    assert configuration["review_population"]["document_count"] == 3
+    assert configuration["review_population"]["review_batch_ids"] == [str(batch_id)]
+    assert configuration["identity_context"]["required"] is False
+    assert configuration["review_policy"] == "LLM_THEN_HUMAN"
+    assert stored_payloads["PRIVILEGE_REVIEW_POPULATION"]["document_count"] == 3
+    assert len(stored_payloads["PRIVILEGE_REVIEW_POPULATION"]["documents"]) == 3
+    assert stored_payloads["PRIVILEGE_IDENTITY_CONTEXT"]["counts"] == {
+        "confirmed_entity_count": 2,
+        "confirmed_variant_count": 1,
+        "confirmed_domain_count": 1,
+        "confirmed_relationship_count": 1,
+    }
+
+    parent_item_id = collection_item_by_document[document_ids[0]]
+    child_item_id = collection_item_by_document[document_ids[1]]
+    standalone_item_id = collection_item_by_document[document_ids[2]]
+    context_only_item_id = uuid.uuid4()
+    family_id = uuid.uuid4()
+
+    def copy_artifact(*, artifact_id, destination, **_kwargs):
+        content = stored_payloads_by_id[artifact_id]
+        destination.write(content)
+        return len(content)
+
+    def relationship_snapshots(*, item_ids, **_kwargs):
+        available = {
+            parent_item_id: SimpleNamespace(
+                item_id=parent_item_id,
+                family_id=family_id,
+                parent_item_id=None,
+                parent_source_item_id=None,
+                parent_identifier=None,
+                child_item_ids=[child_item_id, context_only_item_id],
+                child_source_item_ids=["child-source", "context-source"],
+                child_identifiers=["ATT-0001", "ATT-0002"],
+            ),
+            child_item_id: SimpleNamespace(
+                item_id=child_item_id,
+                family_id=family_id,
+                parent_item_id=parent_item_id,
+                parent_source_item_id="parent-source",
+                parent_identifier="EMAIL-0001",
+                child_item_ids=[],
+                child_source_item_ids=[],
+                child_identifiers=[],
+            ),
+            standalone_item_id: SimpleNamespace(
+                item_id=standalone_item_id,
+                family_id=None,
+                parent_item_id=None,
+                parent_source_item_id=None,
+                parent_identifier=None,
+                child_item_ids=[],
+                child_source_item_ids=[],
+                child_identifiers=[],
+            ),
+        }
+        return {item_id: available[item_id] for item_id in item_ids if item_id in available}
+
+    monkeypatch.setattr("app.privilege_review_programs.copy_workflow_artifact_content", copy_artifact)
+    monkeypatch.setattr(
+        "app.privilege_review_programs.get_collection_item_relationship_snapshots",
+        relationship_snapshots,
+    )
+    family_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program['id']}/privilege-family-context",
+        headers=auth(token),
+        json={"expected_program_version_id": program["current_version"]["id"]},
+    )
+    assert family_response.status_code == 200, family_response.text
+    program = family_response.json()
+    assert program["current_version"]["version"] == 2
+    assert program["current_version"]["configuration_stage"] == "PRIVILEGE_FAMILY_CONTEXT"
+    family_configuration = program["current_version"]["configuration_snapshot"]["privilege_review"][
+        "family_context"
+    ]
+    assert family_configuration["coverage_status"] == "COMPLETE"
+    assert family_configuration["review_document_count"] == 3
+    assert family_configuration["review_unit_count"] == 2
+    assert family_configuration["multi_document_family_count"] == 1
+    assert family_configuration["context_only_member_count"] == 1
+    assert family_configuration["relationship_exception_count"] == 0
+    family_payload = stored_payloads["PRIVILEGE_FAMILY_CONTEXT"]
+    assert family_payload["context_policy"] == {
+        "context_only_members_are_in_review_denominator": False,
+        "missing_relationships_remove_documents_from_review": False,
+    }
+    assert len(family_payload["families"]) == 2
+    assert len(family_payload["documents"]) == 3
+
+    repeated = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program['id']}/privilege-family-context",
+        headers=auth(token),
+        json={"expected_program_version_id": program["current_version"]["id"]},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["current_version"]["version"] == 2
+
+    # Programs created before the Matter Definition phase was added retain
+    # their pinned v1 history and upgrade through a new immutable version.
+    with TestingSessionLocal() as db:
+        stored_program = db.get(ReviewProgram, uuid.UUID(program["id"]))
+        assert stored_program is not None
+        stored_version = db.get(ReviewProgramVersion, stored_program.current_version_id)
+        assert stored_version is not None
+        stored_program.template_version = PRIVILEGE_REVIEW_V1.version
+        stored_program.template_content_hash = PRIVILEGE_REVIEW_V1.content_hash
+        stored_version.template_version = PRIVILEGE_REVIEW_V1.version
+        stored_version.template_content_hash = PRIVILEGE_REVIEW_V1.content_hash
+        legacy_configuration = dict(stored_version.configuration_snapshot)
+        legacy_configuration["template_version"] = PRIVILEGE_REVIEW_V1.version
+        stored_version.configuration_snapshot = legacy_configuration
+        db.commit()
+
+    start = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program['id']}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "foundation-not-executable"},
+    )
+    assert start.status_code == 201, start.text
+    run = start.json()
+    assert run["status"] == "WAITING_FOR_USER"
+    assert run["current_stage"] == "MATTER_DEFINITION"
+    assert run["current_stage_ordinal"] == 3
+    assert run["actions"][0]["action_type"] == "MATTER_DEFINITION_SETUP"
+    upgraded = client.get(
+        f"/v1/matters/{matter['id']}/review-programs/{program['id']}",
+        headers=auth(token),
+    )
+    assert upgraded.status_code == 200, upgraded.text
+    assert upgraded.json()["template_version"] == PRIVILEGE_REVIEW.version
+    assert upgraded.json()["current_version"]["version"] == 3
+    assert upgraded.json()["current_version"]["predecessor_version_id"] == program["current_version"]["id"]
+
+
+def test_create_privilege_program_all_matter_creates_named_ready_batch(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    created, _, matter, token = review_program_workspace(client, root_token)
+    user_id = uuid.UUID(created["initial_admin"]["id"])
+    document_ids = add_documents(matter["id"], user_id, count=4)
+    with TestingSessionLocal() as db:
+        target = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == uuid.UUID(matter["id"]),
+                MetadataDefinition.key == "privilege",
+            )
+        )
+        assert target is not None
+        target_id = target.id
+
+    def store_artifact(**kwargs):
+        return (
+            SimpleNamespace(
+                artifact_id=uuid.uuid4(),
+                content_hash=kwargs["content_hash"],
+                byte_length=kwargs["byte_length"],
+            ),
+            True,
+        )
+
+    monkeypatch.setattr("app.privilege_review_programs.store_workflow_artifact", store_artifact)
+    response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={
+            "template_key": "PRIVILEGE_REVIEW",
+            "key": "whole-matter-privilege-review",
+            "name": "Whole matter privilege review",
+            "privilege_review": {
+                "population_type": "ALL_MATTER",
+                "review_batch_ids": [],
+                "target_metadata_definition_id": str(target_id),
+                "review_policy": "LLM_THEN_HUMAN",
+                "keep_families_together": True,
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    program = response.json()
+    population = program["current_version"]["configuration_snapshot"]["privilege_review"]["review_population"]
+    assert population["selection_type"] == "ALL_MATTER"
+    assert population["document_count"] == len(document_ids)
+    assert population["created_all_matter_batch_id"] == population["review_batch_ids"][0]
+    blocked_start = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program['id']}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "requires-family-context"},
+    )
+    assert blocked_start.status_code == 409
+    assert "prepare family context" in blocked_start.text
+
+    with TestingSessionLocal() as db:
+        batch = db.get(ReviewBatch, uuid.UUID(population["created_all_matter_batch_id"]))
+        assert batch is not None
+        assert batch.name == "Whole matter privilege review"
+        assert batch.selection_type == "ALL_MATTER"
+        assert batch.status == "READY"
+        assert batch.search_status == "NOT_CONFIGURED"
+        assert batch.document_count == len(document_ids)
+        assert (
+            db.scalar(
+                select(func.count()).select_from(ReviewBatchDocument).where(
+                    ReviewBatchDocument.review_batch_id == batch.id
+                )
+            )
+            == len(document_ids)
+        )
+        audit = db.scalar(
+            select(AuditRecord).where(
+                AuditRecord.action == "review_batch.created",
+                AuditRecord.target_id == batch.id,
+            )
+        )
+        assert audit is not None
+        assert audit.details["review_program_id"] == program["id"]
+
+
+def test_privilege_definition_acceptance_targets_family_evidence_packets() -> None:
+    acceptance = next(stage for stage in PRIVILEGE_REVIEW.stages if stage.key == "DEFINITION_ACCEPTANCE")
+    title, explanation, choices = _action_contract(PRIVILEGE_REVIEW, acceptance)
+    assert title == "Accept the Matter Definition"
+    assert "privilege evidence" in explanation
+    assert choices[0]["label"] == "Accept for privilege review"
+
+    evidence = next(stage for stage in PRIVILEGE_REVIEW.stages if stage.key == "PRIVILEGE_EVIDENCE")
+    title, explanation, choices = _action_contract(PRIVILEGE_REVIEW, evidence)
+    assert title == "Prepare family review packets"
+    assert "missing-text" in explanation
+    assert [choice["key"] for choice in choices] == ["PREPARE_EVIDENCE_PACKETS", "STOP"]
+
+    ready_title, ready_explanation, ready_choices = _action_contract(
+        PRIVILEGE_REVIEW,
+        evidence,
+        privilege_evidence_state="PACKETS_READY",
+    )
+    assert ready_title == "Start cited privilege-evidence extraction"
+    assert "durable extraction workers" in ready_explanation
+    assert [choice["key"] for choice in ready_choices] == ["START_EVIDENCE", "STOP"]
+
+    adjudication = next(
+        stage for stage in PRIVILEGE_REVIEW.stages if stage.key == "PRIVILEGE_ADJUDICATION"
+    )
+    adjudication_title, adjudication_explanation, adjudication_choices = _action_contract(
+        PRIVILEGE_REVIEW,
+        adjudication,
+    )
+    assert adjudication_title == "Run privilege recommendations"
+    assert "stored as isolated coding results" in adjudication_explanation
+    assert "Review Batch run" in adjudication_explanation
+    assert "do not write the operational privilege field" in adjudication_explanation
+    assert [choice["key"] for choice in adjudication_choices] == ["START_ADJUDICATION", "STOP"]
+
+    human_review = next(
+        stage for stage in PRIVILEGE_REVIEW.stages if stage.key == "PRIVILEGE_HUMAN_REVIEW"
+    )
+    human_title, human_explanation, human_choices = _action_contract(
+        PRIVILEGE_REVIEW,
+        human_review,
+    )
+    assert human_title == "Review privilege recommendations"
+    assert "not enabled yet" in human_explanation
+    assert [choice["key"] for choice in human_choices] == ["STOP"]
+
+
+def test_latest_definition_assessment_reuses_frozen_accepted_provenance() -> None:
+    matter_id = uuid.uuid4()
+    revision_id = uuid.uuid4()
+    assessment_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    content_hash = "a" * 64
+    run = SimpleNamespace(id=uuid.uuid4(), matter_id=matter_id, current_program_version_id=version_id)
+    version = SimpleNamespace(
+        configuration_snapshot={
+            "accepted_matter_definition": {
+                "assessment_ids": [str(assessment_id)],
+                "assessed_revision_id": str(revision_id),
+                "content_hash": content_hash,
+            }
+        }
+    )
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        matter_id=matter_id,
+        matter_definition_revision_id=revision_id,
+        definition_content_hash=content_hash,
+        status="COMPLETED_WITH_ERRORS",
+    )
+
+    class FakeSession:
+        @staticmethod
+        def scalar(_query):
+            return None
+
+        @staticmethod
+        def get(model, object_id):
+            if model is ReviewProgramVersion and object_id == version_id:
+                return version
+            if model is MatterDefinitionAssessmentRun and object_id == assessment_id:
+                return assessment
+            return None
+
+    child, resolved = _latest_definition_assessment(FakeSession(), run)
+
+    assert child is None
+    assert resolved is assessment
 
 
 def test_whole_collection_scoring_completion_advances_to_coverage_gate(
@@ -618,10 +1175,13 @@ def test_classifier_positive_coverage_reuses_complete_partial_coding_results() -
         expected_source_hash="source-1",
     )
     assert set(current) == {complete_profile_id, evidence_partial_profile_id}
-    assert _current_usable_qa_results(
-        {complete_profile_id: complete},
-        expected_source_hash="different-source",
-    ) == {}
+    assert (
+        _current_usable_qa_results(
+            {complete_profile_id: complete},
+            expected_source_hash="different-source",
+        )
+        == {}
+    )
 
 
 def test_classifier_training_definition_ids_use_frozen_target_selection() -> None:
@@ -705,9 +1265,7 @@ def test_classifier_positive_coverage_retry_archives_prior_batches(
     with TestingSessionLocal() as db:
         run = db.get(ReviewProgramRun, uuid.UUID(run_response.json()["id"]))
         assert run is not None
-        attempt = db.scalar(
-            select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id)
-        )
+        attempt = db.scalar(select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id))
         assert attempt is not None
         batches = [
             ReviewBatch(
@@ -754,10 +1312,7 @@ def test_classifier_positive_coverage_retry_archives_prior_batches(
             )
         )
         assert all(child.status == "ARCHIVED" for child in children)
-        assert all(
-            child.context["archive_reason"] == "CLASSIFIER_POSITIVE_COVERAGE_RETRY"
-            for child in children
-        )
+        assert all(child.context["archive_reason"] == "CLASSIFIER_POSITIVE_COVERAGE_RETRY" for child in children)
 
 
 def test_negative_population_qc_launch_retry_reuses_ready_batch(
@@ -793,11 +1348,7 @@ def test_negative_population_qc_launch_retry_reuses_ready_batch(
         run = db.get(ReviewProgramRun, uuid.UUID(run_response.json()["id"]))
         program = db.get(ReviewProgram, uuid.UUID(program_response.json()["id"]))
         assert run is not None and program is not None
-        attempt = db.scalar(
-            select(ReviewProgramStageAttempt).where(
-                ReviewProgramStageAttempt.run_id == run.id
-            )
-        )
+        attempt = db.scalar(select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id))
         assert attempt is not None
         run.status = "FAILED"
         run.current_stage = "NO_CODE_QC"
@@ -903,29 +1454,132 @@ def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -
     assert _alignment_status(responsive, responsive, None) == "INCOMPLETE"
 
 
+def test_all_model_code_counts_resolve_missing_single_source_and_conflicts() -> None:
+    documents = [uuid.uuid4() for _ in range(5)]
+    left_run = uuid.uuid4()
+    right_run = uuid.uuid4()
+    definition = SimpleNamespace(
+        type="ENUM",
+        cardinality="SINGLE",
+        allowed_values=[
+            {"key": "not_privileged", "active": True},
+            {"key": "privileged", "active": True},
+            {"key": "retired", "active": False},
+        ],
+    )
+    counts = _resolve_all_model_code_field_counts(
+        document_ids=set(documents),
+        source_claims={
+            documents[0]: {left_run: {"privileged"}, right_run: {"privileged"}},
+            documents[1]: {left_run: {"not_privileged"}},
+            documents[2]: {left_run: {"privileged"}, right_run: {"not_privileged"}},
+            documents[4]: {left_run: {"retired"}},
+        },
+        definition=definition,
+    )
+
+    assert counts == {
+        "eligible_document_count": 2,
+        "excluded_document_count": 3,
+        "unlabeled_document_count": 1,
+        "conflicting_document_count": 1,
+        "invalid_document_count": 1,
+        "positive_counts": {"privileged": 1, "not_privileged": 1},
+    }
+
+
+def test_all_model_code_preview_uses_resolved_run_counts(monkeypatch) -> None:
+    definition_id = str(uuid.uuid4())
+    monkeypatch.setattr(
+        "app.review_programs._all_model_codes_count_preview",
+        lambda *_args, **_kwargs: {
+            definition_id: {
+                "eligible_document_count": 1660,
+                "excluded_document_count": 156,
+                "unlabeled_document_count": 117,
+                "conflicting_document_count": 39,
+                "invalid_document_count": 0,
+                "positive_counts": {
+                    "needs_review": 38,
+                    "not_privileged": 1455,
+                    "privileged": 167,
+                },
+            }
+        },
+    )
+
+    preview = _training_label_count_preview(
+        None,  # type: ignore[arg-type]
+        discovery_analysis={
+            "fields": [
+                {
+                    "metadata_definition_id": definition_id,
+                    "key": "privilege",
+                    "display_name": "Privilege",
+                    "exact_count": 1458,
+                    "partial_count": 0,
+                    "disagreement_count": 334,
+                    "incomplete_count": 24,
+                    "classes": [
+                        {"value_key": "needs_review", "value_label": "Needs review", "exact_selected_count": 21},
+                        {
+                            "value_key": "not_privileged",
+                            "value_label": "Not privileged",
+                            "exact_selected_count": 1240,
+                        },
+                        {"value_key": "privileged", "value_label": "Privileged", "exact_selected_count": 81},
+                    ],
+                }
+            ]
+        },
+        resolution={"policy": "ALL_MODEL_CODES", "profile_run_ids": [str(uuid.uuid4())]},
+    )
+
+    field = preview["fields"][0]
+    assert field["eligible_document_count"] == 1660
+    assert field["excluded_document_count"] == 156
+    assert field["unlabeled_document_count"] == 117
+    assert field["conflicting_document_count"] == 39
+    assert field["basis"] == "All pinned model codings after excluding missing labels and conflicts"
+    assert {value["value_key"]: value["positive_count"] for value in field["values"]} == {
+        "needs_review": 38,
+        "not_privileged": 1455,
+        "privileged": 167,
+    }
+
+
 def test_final_alignment_source_status_separates_partial_from_source_mismatch() -> None:
     profile_id = uuid.uuid4()
     matching = SimpleNamespace(source_content_hash="current")
     mismatching = SimpleNamespace(source_content_hash="older")
 
-    assert _final_alignment_source_status(
-        source_hash="current",
-        document_results={profile_id: matching},
-        current_results={profile_id: matching},
-        required_profile_count=2,
-    ) == "PARTIAL_OR_MISSING_PROFILE"
-    assert _final_alignment_source_status(
-        source_hash="current",
-        document_results={profile_id: mismatching},
-        current_results={},
-        required_profile_count=2,
-    ) == "SOURCE_VERSION_MISMATCH"
-    assert _final_alignment_source_status(
-        source_hash="current",
-        document_results={},
-        current_results={},
-        required_profile_count=2,
-    ) == "MISSING_QA"
+    assert (
+        _final_alignment_source_status(
+            source_hash="current",
+            document_results={profile_id: matching},
+            current_results={profile_id: matching},
+            required_profile_count=2,
+        )
+        == "PARTIAL_OR_MISSING_PROFILE"
+    )
+    assert (
+        _final_alignment_source_status(
+            source_hash="current",
+            document_results={profile_id: mismatching},
+            current_results={},
+            required_profile_count=2,
+        )
+        == "SOURCE_VERSION_MISMATCH"
+    )
+    assert (
+        _final_alignment_source_status(
+            source_hash="current",
+            document_results={},
+            current_results={},
+            required_profile_count=2,
+        )
+        == "MISSING_QA"
+    )
 
 
 def test_final_alignment_population_uses_selected_coverage_threshold() -> None:
@@ -948,9 +1602,7 @@ def test_final_alignment_population_uses_selected_coverage_threshold() -> None:
 
 
 def test_final_alignment_recalculation_is_a_one_time_upgrade() -> None:
-    historical_run = SimpleNamespace(
-        progress_summary={"final_alignment": {"state": "COMPLETED"}}
-    )
+    historical_run = SimpleNamespace(progress_summary={"final_alignment": {"state": "COMPLETED"}})
     upgraded_run = SimpleNamespace(
         progress_summary={
             "final_alignment": {
@@ -1113,6 +1765,62 @@ def test_negative_population_qc_gate_and_random_audit_interval() -> None:
     )
 
 
+def test_sufficient_issue_support_can_start_another_discovery_round() -> None:
+    stage = next(item for item in FIRST_PASS_REVIEW.stages if item.key == "ISSUE_SUPPORT_DECISION")
+    title, explanation, choices = _action_contract(
+        FIRST_PASS_REVIEW,
+        stage,
+        support_state="SUFFICIENT",
+    )
+
+    assert title == "Review model alignment and issue support"
+    assert "another discovery round" in explanation
+    assert [choice["key"] for choice in choices] == ["CONTINUE", "SUPPLEMENT", "STOP"]
+    supplement = next(choice for choice in choices if choice["key"] == "SUPPLEMENT")
+    assert supplement["label"] == "Review more documents"
+    assert "new document target and batch size" in supplement["consequence"]
+    assert "previously reviewed" in supplement["consequence"]
+
+
+def test_reconcile_refreshes_an_existing_sufficient_support_action() -> None:
+    stage = next(item for item in FIRST_PASS_REVIEW.stages if item.key == "ISSUE_SUPPORT_DECISION")
+    action_id = uuid.uuid4()
+    action = SimpleNamespace(
+        status="OPEN",
+        stage_key="ISSUE_SUPPORT_DECISION",
+        title="Review model alignment and issue support",
+        explanation="Review the current support.",
+        decision_context={"discovery_analysis": {"support_status": "SUFFICIENT"}},
+        allowed_choices=[
+            {"key": "CONTINUE", "label": "Accept current support", "consequence": "Continue."},
+            {"key": "STOP", "label": "Stop program", "consequence": "Stop."},
+        ],
+        preview_hash="legacy-preview",
+    )
+    db = SimpleNamespace(get=lambda model, identifier: action if identifier == action_id else None)
+    program = SimpleNamespace(
+        template_key=FIRST_PASS_REVIEW.key,
+        template_version=FIRST_PASS_REVIEW.version,
+        template_content_hash=FIRST_PASS_REVIEW.content_hash,
+    )
+    run = SimpleNamespace(
+        status="WAITING_FOR_USER",
+        current_stage="ISSUE_SUPPORT_DECISION",
+        current_stage_ordinal=stage.ordinal,
+        pending_action_id=action_id,
+        progress_summary={"discovery_analysis": {"support_status": "SUFFICIENT"}},
+    )
+
+    assert _refresh_issue_support_action_contract(db, program=program, run=run) is True
+    assert [choice["key"] for choice in action.allowed_choices] == [
+        "CONTINUE",
+        "SUPPLEMENT",
+        "STOP",
+    ]
+    assert action.preview_hash != "legacy-preview"
+    assert _refresh_issue_support_action_contract(db, program=program, run=run) is False
+
+
 def test_superseded_negative_population_qc_inventory_work_is_a_no_op(
     client: TestClient,
     root_token: str,
@@ -1133,11 +1841,7 @@ def test_superseded_negative_population_qc_inventory_work_is_a_no_op(
     assert started.status_code == 201, started.text
     run_id = uuid.UUID(started.json()["id"])
     with TestingSessionLocal() as db:
-        attempt = db.scalar(
-            select(ReviewProgramStageAttempt).where(
-                ReviewProgramStageAttempt.run_id == run_id
-            )
-        )
+        attempt = db.scalar(select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run_id))
         assert attempt is not None
         attempt_id = attempt.id
 
@@ -1571,9 +2275,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         db.commit()
     refinement_action = next(action for action in reconciled_assessment.json()["actions"] if action["status"] == "OPEN")
     assert refinement_action["title"] == "Resolve findings and publish the revised Matter Definition"
-    assert next(
-        choice["label"] for choice in refinement_action["allowed_choices"] if choice["key"] == "CONTINUE"
-    ) == "Continue after publication"
+    assert (
+        next(choice["label"] for choice in refinement_action["allowed_choices"] if choice["key"] == "CONTINUE")
+        == "Continue after publication"
+    )
     assert refinement_action["decision_context"]["assessment"]["publication_required"] is False
     assert refinement_action["decision_context"]["assessment"]["publication_ready"] is True
     blocked = client.post(
@@ -1702,9 +2407,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert len(frozen["assessment_ids"]) == 3
     assert frozen["assessment_status"] == "FINAL_REFINEMENT_ACCEPTED_WITHOUT_REASSESSMENT"
     acceptance_attempt = next(
-        attempt
-        for attempt in third_ready.json()["stage_attempts"]
-        if attempt["stage_key"] == "DEFINITION_ACCEPTANCE"
+        attempt for attempt in third_ready.json()["stage_attempts"] if attempt["stage_key"] == "DEFINITION_ACCEPTANCE"
     )
     assert acceptance_attempt["status"] == "COMPLETED"
 
@@ -2473,25 +3176,25 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     label_preview = finalization_action["decision_context"]["training_label_preview"]
     assert label_preview["policy"] == "ADJUDICATED_DISAGREEMENTS"
     assert label_preview["fields"][0]["display_name"] == "Responsive"
-    assert label_preview["fields"][0]["basis"] == (
-        "Exact model agreements plus completed human decisions"
-    )
+    assert label_preview["fields"][0]["basis"] == ("Exact model agreements plus completed human decisions")
     assert {value["value_key"] for value in label_preview["fields"][0]["values"]} == {
         "false",
         "true",
     }
-    assert finalization_action["decision_context"]["training_label_resolution"][
-        "reconciliation_path"
-    ] == "PARTIAL_ADJUDICATION_EXCLUDE_UNRESOLVED"
-    assert finalization_action["decision_context"]["training_label_resolution"][
-        "difference_completed_document_count"
-    ] == 1
-    assert finalization_action["decision_context"]["training_label_resolution"][
-        "difference_unresolved_document_count"
-    ] == 4
-    assert finalization_action["decision_context"]["training_label_resolution"][
-        "selected_metadata_definition_ids"
-    ] == [str(destination_id)]
+    assert (
+        finalization_action["decision_context"]["training_label_resolution"]["reconciliation_path"]
+        == "PARTIAL_ADJUDICATION_EXCLUDE_UNRESOLVED"
+    )
+    assert (
+        finalization_action["decision_context"]["training_label_resolution"]["difference_completed_document_count"] == 1
+    )
+    assert (
+        finalization_action["decision_context"]["training_label_resolution"]["difference_unresolved_document_count"]
+        == 4
+    )
+    assert finalization_action["decision_context"]["training_label_resolution"]["selected_metadata_definition_ids"] == [
+        str(destination_id)
+    ]
     assert (
         finalization_action["decision_context"]["training_label_resolution"]["adjudication_sources"][0][
             "reviewer_coding_revision"
@@ -2651,6 +3354,19 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             model_version_id=model_version_id,
         ),
     )
+    monkeypatch.setattr(
+        "app.review_programs._discovery_query_class_support",
+        lambda *args, **kwargs: {
+            (destination_id, "true"): {
+                "hurricane-disruption": {
+                    "selected_document_count": 5,
+                    "union_count": 3,
+                    "intersection_count": 2,
+                    "union_rate": 0.6,
+                }
+            }
+        },
+    )
     improvement_gate = client.post(
         f"{runs_url}/{run_id}/actions/{review_action['id']}/resolve",
         headers=auth(token),
@@ -2667,25 +3383,39 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert len(targets) == 1
     assert targets[0]["metadata_definition_id"] == str(destination_id)
     assert targets[0]["class_key"] == "true"
+    assert targets[0]["criterion_key"] == "hurricane-disruption"
 
     improvement_documents = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)]
     search_hits.extend(improvement_documents)
+    improvement_payload = {
+        "preview_hash": improvement_action["preview_hash"],
+        "queries": [
+            {
+                "metadata_definition_id": targets[0]["metadata_definition_id"],
+                "class_key": targets[0]["class_key"],
+                "criterion_key": targets[0]["criterion_key"],
+                "query": targets[0]["suggested_query"],
+                "quota": 2,
+                "expanded_query": None,
+                "expanded_quota": 2,
+            }
+        ],
+        "target_batch_size": 2,
+        "keep_families_together": False,
+    }
+    improvement_preview = client.post(
+        f"{runs_url}/{run_id}/actions/{improvement_action['id']}/classifier-improvement-preview",
+        headers=auth(token),
+        json=improvement_payload,
+    )
+    assert improvement_preview.status_code == 200, improvement_preview.text
+    assert improvement_preview.json()["selected_document_count"] == 2
     improvement_started = client.post(
         f"{runs_url}/{run_id}/actions/{improvement_action['id']}/classifier-improvement-setup",
         headers=auth(token),
         json={
-            "preview_hash": improvement_action["preview_hash"],
-            "queries": [
-                {
-                    "metadata_definition_id": targets[0]["metadata_definition_id"],
-                    "class_key": targets[0]["class_key"],
-                    "query": "edited targeted responsive search",
-                    "quota": 2,
-                }
-            ],
-            "control_sample_size": 0,
-            "target_batch_size": 2,
-            "keep_families_together": False,
+            **improvement_payload,
+            "retrieval_preview_hash": improvement_preview.json()["retrieval_preview_hash"],
         },
     )
     assert improvement_started.status_code == 202, improvement_started.text
@@ -2703,7 +3433,8 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         improvement_set = db.get(batch_sets.AnalysisTaskBatchSet, improvement_child.child_id)
         assert improvement_set is not None
         provenance = improvement_set.selection_definition["review_program"]
-        assert provenance["queries"][0]["query"] == "edited targeted responsive search"
+        assert provenance["queries"][0]["query"] == "hurricane disruption"
+        assert provenance["queries"][0]["lane"] == "ACCEPTED_TARGET"
         assert provenance["excluded_prior_program_document_count"] == 5
         batch_sets.materialize_batch_set(
             db,
@@ -2757,9 +3488,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         },
     )
     assert selected_labels.status_code == 200, selected_labels.text
-    assert selected_labels.json()["progress_summary"]["training_label_resolution"]["policy"] == (
-        "OVERLAPPING_VALUES"
-    )
+    assert selected_labels.json()["progress_summary"]["training_label_resolution"]["policy"] == ("OVERLAPPING_VALUES")
     second_finalization_action = next(
         action for action in selected_labels.json()["actions"] if action["status"] == "OPEN"
     )

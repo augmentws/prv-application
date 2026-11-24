@@ -20,9 +20,13 @@ export interface ReviewBatchCreate {
   search?: MatterSearchRequest | null;
   source_batch_id?: string | null;
   saved_search_id?: string | null;
+  fixed_saved_search_id?: string | null;
+  sample_saved_search_id?: string | null;
   assessment_run_id?: string | null;
   sample_size?: number | null;
   random_seed?: string | null;
+  expected_search_index_generation_id?: string | null;
+  preview_hash?: string | null;
   include_complete_families?: boolean;
   assigned_user_id?: string | null;
   reviewer_value_visibility?: ReviewBatchCreateReviewerValueVisibility;

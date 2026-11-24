@@ -46,6 +46,7 @@ from app.models import (
     AgentDefinition,
     AgentDefinitionVersion,
     AnalysisTaskBatchSet,
+    AnalysisTaskExecutionProfile,
     BatchTopic,
     BatchTopicAssignment,
     BatchTopicTaxonomy,
@@ -95,10 +96,13 @@ from app.review_batch_comparisons import (
     export_coding_comparison,
 )
 from app.review_batches import (
+    active_search_index_generation,
     complete_review_batch_execution,
     create_review_batch_execution,
     fail_review_batch_execution,
     materialize_review_batch,
+    resolve_composite_saved_search_population,
+    search_index_generation_snapshot,
 )
 from app.reviewer_coding import ReviewerFieldReplacement, append_reviewer_coding_revision
 from app.routers.saved_searches import _saved_search
@@ -135,6 +139,8 @@ from app.schemas import (
     ReviewBatchComparisonRead,
     ReviewBatchComparisonRequest,
     ReviewBatchComparisonSourceOptionRead,
+    ReviewBatchCompositePreviewRead,
+    ReviewBatchCompositePreviewRequest,
     ReviewBatchCreate,
     ReviewBatchDisagreementBatchCreate,
     ReviewBatchDisagreementBatchPreviewRead,
@@ -601,6 +607,87 @@ def _clone_batch_coding_groups(
     )
 
 
+def _composite_preview_identity(
+    *,
+    fixed_saved_search,
+    sample_saved_search,
+    sample_size: int,
+    random_seed: str,
+    include_complete_families: bool,
+    generation: SearchIndexGeneration,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "fixed_saved_search": {
+            "id": str(fixed_saved_search.id),
+            "updated_at": fixed_saved_search.updated_at.isoformat(),
+            "search": fixed_saved_search.search_definition,
+        },
+        "sample_saved_search": {
+            "id": str(sample_saved_search.id),
+            "updated_at": sample_saved_search.updated_at.isoformat(),
+            "search": sample_saved_search.search_definition,
+        },
+        "sample_size": sample_size,
+        "random_seed": random_seed,
+        "include_complete_families": include_complete_families,
+        "search_index_generation": search_index_generation_snapshot(generation),
+    }
+
+
+@router.post("/composite-preview", response_model=ReviewBatchCompositePreviewRead)
+def preview_composite_review_batch(
+    matter_id: uuid.UUID,
+    payload: ReviewBatchCompositePreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ReviewBatchCompositePreviewRead:
+    matter = _matter(db, matter_id, principal, "batch.create")
+    fixed_saved_search = _saved_search(db, matter.id, payload.fixed_saved_search_id, principal)
+    sample_saved_search = _saved_search(db, matter.id, payload.sample_saved_search_id, principal)
+    fixed_request = MatterSearchRequest.model_validate(fixed_saved_search.search_definition)
+    sample_request = MatterSearchRequest.model_validate(sample_saved_search.search_definition)
+    if fixed_request.search_mode != "KEYWORD" or sample_request.search_mode != "KEYWORD":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Composite review batches require Keyword saved searches",
+        )
+    try:
+        generation = active_search_index_generation(db, matter.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    random_seed = payload.random_seed or str(uuid.uuid4())
+    _, summary = resolve_composite_saved_search_population(
+        db,
+        matter=matter,
+        settings=settings,
+        generation=generation,
+        fixed_search=fixed_request,
+        sample_search=sample_request,
+        sample_size=payload.sample_size,
+        random_seed=random_seed,
+        actor_user_id=principal.user.id,
+        include_complete_families=payload.include_complete_families,
+    )
+    preview_hash = canonical_value_hash(
+        _composite_preview_identity(
+            fixed_saved_search=fixed_saved_search,
+            sample_saved_search=sample_saved_search,
+            sample_size=payload.sample_size,
+            random_seed=random_seed,
+            include_complete_families=payload.include_complete_families,
+            generation=generation,
+        )
+    )
+    return ReviewBatchCompositePreviewRead(
+        **summary,
+        random_seed=random_seed,
+        search_index_generation_id=generation.id,
+        preview_hash=preview_hash,
+    )
+
+
 @router.post("", response_model=ReviewBatchRead, status_code=status.HTTP_202_ACCEPTED)
 def create_review_batch(
     matter_id: uuid.UUID,
@@ -622,7 +709,50 @@ def create_review_batch(
         if saved_request.search_mode != "KEYWORD":
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Review batch sampling currently requires a Keyword saved search",
+                detail="Review batch creation currently requires a Keyword saved search",
+            )
+    fixed_saved_search = None
+    sample_saved_search = None
+    composite_generation = None
+    if payload.selection_type == "COMPOSITE_SAVED_SEARCH":
+        assert payload.fixed_saved_search_id is not None
+        assert payload.sample_saved_search_id is not None
+        assert payload.sample_size is not None
+        assert payload.random_seed is not None
+        assert payload.expected_search_index_generation_id is not None
+        assert payload.preview_hash is not None
+        fixed_saved_search = _saved_search(db, matter.id, payload.fixed_saved_search_id, principal)
+        sample_saved_search = _saved_search(db, matter.id, payload.sample_saved_search_id, principal)
+        fixed_request = MatterSearchRequest.model_validate(fixed_saved_search.search_definition)
+        sample_request = MatterSearchRequest.model_validate(sample_saved_search.search_definition)
+        if fixed_request.search_mode != "KEYWORD" or sample_request.search_mode != "KEYWORD":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Composite review batches require Keyword saved searches",
+            )
+        try:
+            composite_generation = active_search_index_generation(db, matter.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if composite_generation.id != payload.expected_search_index_generation_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The matter search index changed after preview; preview the population again",
+            )
+        expected_preview_hash = canonical_value_hash(
+            _composite_preview_identity(
+                fixed_saved_search=fixed_saved_search,
+                sample_saved_search=sample_saved_search,
+                sample_size=payload.sample_size,
+                random_seed=payload.random_seed,
+                include_complete_families=payload.include_complete_families,
+                generation=composite_generation,
+            )
+        )
+        if expected_preview_hash != payload.preview_hash:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The composite population inputs changed after preview; preview the population again",
             )
     assessment = None
     assessment_candidate_count = 0
@@ -651,6 +781,13 @@ def create_review_batch(
     batch_id = uuid.uuid4()
     seed = payload.random_seed or (str(batch_id) if payload.selection_type.startswith("RANDOM") else None)
     selection = {"type": payload.selection_type}
+    if payload.document_ids is not None:
+        selection.update(
+            {
+                "document_ids": [str(value) for value in payload.document_ids],
+                "document_count": len(payload.document_ids),
+            }
+        )
     if payload.include_complete_families:
         selection["family_policy"] = "EXPAND_COMPLETE_FAMILIES_IN_MATTER"
     if payload.search is not None:
@@ -664,6 +801,27 @@ def create_review_batch(
                 "search": MatterSearchRequest.model_validate(saved_search.search_definition)
                 .model_copy(update={"offset": 0})
                 .model_dump(mode="json", by_alias=True),
+            }
+        )
+    if fixed_saved_search is not None and sample_saved_search is not None and composite_generation is not None:
+        selection.update(
+            {
+                "schema_version": 1,
+                "fixed_saved_search_id": str(fixed_saved_search.id),
+                "fixed_saved_search_name": fixed_saved_search.name,
+                "fixed_saved_search_updated_at": fixed_saved_search.updated_at.isoformat(),
+                "fixed_search": MatterSearchRequest.model_validate(fixed_saved_search.search_definition)
+                .model_copy(update={"offset": 0})
+                .model_dump(mode="json", by_alias=True),
+                "sample_saved_search_id": str(sample_saved_search.id),
+                "sample_saved_search_name": sample_saved_search.name,
+                "sample_saved_search_updated_at": sample_saved_search.updated_at.isoformat(),
+                "sample_search": MatterSearchRequest.model_validate(sample_saved_search.search_definition)
+                .model_copy(update={"offset": 0})
+                .model_dump(mode="json", by_alias=True),
+                "deduplication_policy": "FIXED_POPULATION_WINS",
+                "preview_hash": payload.preview_hash,
+                "search_index_generation": search_index_generation_snapshot(composite_generation),
             }
         )
     if assessment is not None:
@@ -689,7 +847,13 @@ def create_review_batch(
         selection_type=payload.selection_type,
         selection_definition=selection,
         source_batch_id=payload.source_batch_id,
-        search_index_generation_id=(assessment.search_index_generation_id if assessment is not None else None),
+        search_index_generation_id=(
+            composite_generation.id
+            if composite_generation is not None
+            else assessment.search_index_generation_id
+            if assessment is not None
+            else None
+        ),
         sample_size=payload.sample_size,
         random_seed=seed,
         assigned_user_id=payload.assigned_user_id,
@@ -721,7 +885,16 @@ def create_review_batch(
             "matter_id": str(matter.id),
             "selection_type": batch.selection_type,
             "saved_search_id": str(saved_search.id) if saved_search is not None else None,
+            "fixed_saved_search_id": (
+                str(fixed_saved_search.id) if fixed_saved_search is not None else None
+            ),
+            "sample_saved_search_id": (
+                str(sample_saved_search.id) if sample_saved_search is not None else None
+            ),
             "assessment_run_id": str(assessment.id) if assessment is not None else None,
+            "explicit_document_count": (
+                len(payload.document_ids) if payload.document_ids is not None else None
+            ),
             "family_policy": selection.get("family_policy"),
         },
     )
@@ -2265,6 +2438,17 @@ def start_review_batch_analysis_run(
         )
     if task_version is None:
         raise HTTPException(status_code=409, detail="Published analysis task version is unavailable")
+    execution_profile = None
+    if payload.execution_profile_id is not None:
+        execution_profile = db.get(AnalysisTaskExecutionProfile, payload.execution_profile_id)
+        if (
+            execution_profile is None
+            or execution_profile.matter_analysis_task_version_id != task_version.id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Execution profile does not belong to the selected analysis task version",
+            )
     try:
         workflow, run = queue_analysis_task_batch(
             db,
@@ -2273,6 +2457,7 @@ def start_review_batch_analysis_run(
             task=task,
             task_version=task_version,
             initiated_by_user_id=principal.user.id,
+            execution_profile=execution_profile,
         )
     except MatterAnalysisTaskConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2289,6 +2474,7 @@ def start_review_batch_analysis_run(
             "task_id": str(task.id),
             "task_version_id": str(task_version.id),
             "task_version": task_version.version,
+            "execution_profile_id": str(execution_profile.id) if execution_profile is not None else None,
             "analysis_task_batch_set_id": (
                 str(batch.analysis_task_batch_set_id) if batch.analysis_task_batch_set_id else None
             ),

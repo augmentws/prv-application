@@ -73,7 +73,12 @@ def test_document_pipeline_runs_ordered_stages(monkeypatch) -> None:
         "compatibility_result_artifact_id": "compatibility-id",
         "narrative_artifact_id": "narrative-id",
     }
-    evidence_assessments.execute_adjudication.assert_called_once_with("assessment-id", "observations-id", "actor-id")
+    evidence_assessments.execute_adjudication.assert_called_once_with(
+        "assessment-id",
+        "observations-id",
+        "actor-id",
+        None,
+    )
     evidence_assessments.execute_narrative.assert_called_once_with("assessment-id", "compatibility-id", "actor-id")
 
 

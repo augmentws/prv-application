@@ -588,20 +588,32 @@ def complete_analysis_task_promotion(db: Session, promotion_id: uuid.UUID) -> No
     if run is not None:
         run.result_policy = "PUBLISH_TO_MATTER"
     source_id = _promotion_source_id(promotion)
-    document_ids = list(
-        db.scalars(
-            select(distinct(MetadataEvent.matter_document_id)).where(
+    projected_rows = db.execute(
+        select(
+            MetadataEvent.matter_document_id,
+            MetadataEvent.metadata_definition_id,
+        )
+        .join(MetadataDefinition, MetadataDefinition.id == MetadataEvent.metadata_definition_id)
+        .where(
                 MetadataEvent.source_type == ("HUMAN" if reviewer_coding is not None else "AGENT"),
                 MetadataEvent.source_id == source_id,
+                MetadataDefinition.status == "ACTIVE",
+                MetadataDefinition.searchable.is_(True),
             )
-        )
-    )
+        .distinct()
+    ).all()
+    document_ids = sorted({document_id for document_id, _definition_id in projected_rows}, key=str)
+    definition_ids = sorted({_definition_id for _document_id, _definition_id in projected_rows}, key=str)
     if promotion.search_operation_id is None and document_ids:
         operation = create_search_operation(
             db,
             matter_id=promotion.matter_id,
             kind="DOCUMENT_UPSERT",
-            payload={"document_ids": [str(value) for value in document_ids]},
+            payload={
+                "document_ids": [str(value) for value in document_ids],
+                "metadata_definition_ids": [str(value) for value in definition_ids],
+                "projection_scope": "MATTER_CODING_FIELDS",
+            },
             created_by_user_id=promotion.created_by_user_id,
         )
         promotion.search_operation_id = operation.id

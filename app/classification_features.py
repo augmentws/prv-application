@@ -149,11 +149,7 @@ def _metadata(values: dict[str, Any]) -> dict[bytes, bytes]:
     for key, value in sorted(values.items()):
         if value is None:
             continue
-        rendered = (
-            _canonical_json(value).decode()
-            if isinstance(value, (dict, list))
-            else str(value)
-        )
+        rendered = _canonical_json(value).decode() if isinstance(value, (dict, list)) else str(value)
         result[f"pvr.{key}".encode()] = rendered.encode()
     return result
 
@@ -227,6 +223,10 @@ def _read_population_table(
                 "Classification input manifest identity does not match the dataset snapshot",
                 code="INPUT_MANIFEST_IDENTITY_MISMATCH",
             )
+        # Manifest content is loaded from Artifact storage and can take longer
+        # than the database idle-in-transaction timeout. End the read-only
+        # transaction before doing that external I/O.
+        db.commit()
         try:
             return read_analysis_input_manifest_table(manifest, actor_user_id=actor_user_id)
         except AnalysisInputManifestError as exc:
@@ -323,8 +323,7 @@ def _pool_vector_artifact(
     if any(vector is None or len(vector) != contract.dimensions for vector in values):
         raise ValueError("Chunk vector artifact has an invalid vector shape")
     pooled = [
-        math.fsum(float(vector[index]) for vector in values) / len(values)
-        for index in range(contract.dimensions)
+        math.fsum(float(vector[index]) for vector in values) / len(values) for index in range(contract.dimensions)
     ]
     if any(not math.isfinite(value) for value in pooled):
         raise ValueError("Pooled feature contains a non-finite value")
@@ -349,9 +348,7 @@ def _iter_feature_row_batches(
     processed = 0
     status_counts: Counter[str] = Counter()
     labeled_sources = [
-        source
-        for source, label in zip(population, labels, strict=True)
-        if label["resolution_status"] == "LABELED"
+        source for source, label in zip(population, labels, strict=True) if label["resolution_status"] == "LABELED"
     ]
     for offset in range(0, len(labeled_sources), FEATURE_LOAD_BATCH_SIZE):
         sources = labeled_sources[offset : offset + FEATURE_LOAD_BATCH_SIZE]
@@ -364,6 +361,7 @@ def _iter_feature_row_batches(
             tenant_id=snapshot.tenant_id,
             client_id=client_id,
         )
+
         def build_row(
             values: tuple[dict[str, Any], uuid.UUID],
             batch_artifacts: dict[uuid.UUID, ChunkVectorArtifactSnapshot] = artifacts,
@@ -631,10 +629,7 @@ def _row_observes_class(
     class_key: str,
 ) -> bool:
     observed = label.get("one_vs_rest_observed_mask") or []
-    return any(
-        key == class_key and is_observed
-        for key, is_observed in zip(observed_class_keys, observed, strict=True)
-    )
+    return any(key == class_key and is_observed for key, is_observed in zip(observed_class_keys, observed, strict=True))
 
 
 def _allocate_folds(
@@ -649,7 +644,9 @@ def _allocate_folds(
         group_id: Counter(key for index in indices for key in memberships[index])
         for group_id, indices in eligible_groups.items()
     }
-    total_counts = Counter(key for indices in eligible_groups.values() for index in indices for key in memberships[index])
+    total_counts = Counter(
+        key for indices in eligible_groups.values() for index in indices for key in memberships[index]
+    )
     ordered_groups = sorted(
         eligible_groups,
         key=lambda group_id: (
@@ -670,8 +667,7 @@ def _allocate_folds(
             candidates,
             key=lambda fold: (
                 sum(
-                    ((fold_counts[fold][key] + group_counts[group_id][key]) / max(total_counts[key], 1))
-                    ** 2
+                    ((fold_counts[fold][key] + group_counts[group_id][key]) / max(total_counts[key], 1)) ** 2
                     for key in class_keys
                 ),
                 (fold_sizes[fold] + len(eligible_groups[group_id])) / max(row_count, 1),
@@ -681,11 +677,7 @@ def _allocate_folds(
         group_fold[group_id] = selected
         fold_counts[selected].update(group_counts[group_id])
         fold_sizes[selected] += len(eligible_groups[group_id])
-    assignments = {
-        index: group_fold[group_id]
-        for group_id, indices in eligible_groups.items()
-        for index in indices
-    }
+    assignments = {index: group_fold[group_id] for group_id, indices in eligible_groups.items() for index in indices}
     return assignments, fold_counts
 
 
@@ -700,8 +692,7 @@ def _assign_folds(
     seed: int,
 ) -> tuple[dict[int, int], list[dict[str, int]]]:
     eligible_groups = {
-        group_id: [index for index in indices if index in eligible_indices]
-        for group_id, indices in groups.items()
+        group_id: [index for index in indices if index in eligible_indices] for group_id, indices in groups.items()
     }
     eligible_groups = {key: value for key, value in eligible_groups.items() if value}
     if len(eligible_groups) < fold_count:
@@ -760,9 +751,7 @@ def _assign_one_vs_rest_folds(
         )
         for index in candidate_indices
     }
-    index_to_group = {
-        index: group_id for group_id, indices in groups.items() for index in indices
-    }
+    index_to_group = {index: group_id for group_id, indices in groups.items() for index in indices}
     exclusions: dict[str, dict[str, Any]] = {}
     trained = list(observed_class_keys)
     for class_key in observed_class_keys:
@@ -813,8 +802,7 @@ def _assign_one_vs_rest_folds(
     while True:
         if len(trained) < 2:
             exclusion_summary = ", ".join(
-                f"{key} ({value['reason_code']})"
-                for key, value in list(exclusions.items())[:10]
+                f"{key} ({value['reason_code']})" for key, value in list(exclusions.items())[:10]
             )
             if len(exclusions) > 10:
                 exclusion_summary += f", plus {len(exclusions) - 10} more"
@@ -839,8 +827,7 @@ def _assign_one_vs_rest_folds(
                 code="INSUFFICIENT_LABELED_FEATURES",
             )
         eligible_groups = {
-            group_id: [index for index in indices if index in eligible_indices]
-            for group_id, indices in groups.items()
+            group_id: [index for index in indices if index in eligible_indices] for group_id, indices in groups.items()
         }
         eligible_groups = {key: value for key, value in eligible_groups.items() if value}
         if len(eligible_groups) < fold_count:
@@ -849,8 +836,7 @@ def _assign_one_vs_rest_folds(
                 code="INSUFFICIENT_GROUPS_FOR_FOLDS",
             )
         memberships = {
-            index: tuple(key for key in candidate_memberships[index] if key in selected)
-            for index in eligible_indices
+            index: tuple(key for key in candidate_memberships[index] if key in selected) for index in eligible_indices
         }
         assignments, fold_counts = _allocate_folds(
             eligible_groups=eligible_groups,
@@ -905,9 +891,7 @@ def _assign_one_vs_rest_folds(
         negative_support = [counts[class_key] for counts in fold_negative_counts]
         positive_count = sum(class_key in candidate_memberships[index] for index in candidate_indices)
         positive_groups = {
-            index_to_group[index]
-            for index in candidate_indices
-            if class_key in candidate_memberships[index]
+            index_to_group[index] for index in candidate_indices if class_key in candidate_memberships[index]
         }
         negative_indices = [
             index
@@ -951,23 +935,13 @@ def _build_split_rows(
     population_ids = [row["matter_document_id"] for row in population]
     label_ids = [row["matter_document_id"] for row in labels]
     feature_ids = [str(row.matter_document_id) for row in features]
-    labeled_ids = [
-        label["matter_document_id"]
-        for label in labels
-        if label["resolution_status"] == "LABELED"
-    ]
-    if (
-        population_ids != label_ids
-        or len(feature_ids) != len(set(feature_ids))
-        or feature_ids != labeled_ids
-    ):
+    labeled_ids = [label["matter_document_id"] for label in labels if label["resolution_status"] == "LABELED"]
+    if population_ids != label_ids or len(feature_ids) != len(set(feature_ids)) or feature_ids != labeled_ids:
         raise ClassificationFeatureSplitError(
             "Population and label rows, plus labeled feature rows, must align by document ID and order",
             code="DATASET_ROW_ALIGNMENT_FAILED",
         )
-    features_by_document_id = {
-        str(feature.matter_document_id): feature for feature in features
-    }
+    features_by_document_id = {str(feature.matter_document_id): feature for feature in features}
     groups, index_to_group = _connected_groups(population)
     strategy = ClassificationStrategy(configuration.classification_strategy)
     candidate_indices = {
@@ -982,17 +956,15 @@ def _build_split_rows(
             code="INSUFFICIENT_LABELED_FEATURES",
         )
     if strategy == ClassificationStrategy.ONE_VS_REST:
-        assignments, fold_support, eligible_indices, trained_class_keys, excluded_classes = (
-            _assign_one_vs_rest_folds(
-                groups=groups,
-                candidate_indices=candidate_indices,
-                labels=labels,
-                observed_class_keys=class_keys,
-                fold_count=request.validation_policy.fold_count,
-                minimum_labeled_count=request.validation_policy.minimum_labeled_count,
-                minimum_per_class=request.validation_policy.minimum_labeled_count_per_class,
-                seed=request.random_seed,
-            )
+        assignments, fold_support, eligible_indices, trained_class_keys, excluded_classes = _assign_one_vs_rest_folds(
+            groups=groups,
+            candidate_indices=candidate_indices,
+            labels=labels,
+            observed_class_keys=class_keys,
+            fold_count=request.validation_policy.fold_count,
+            minimum_labeled_count=request.validation_policy.minimum_labeled_count,
+            minimum_per_class=request.validation_policy.minimum_labeled_count_per_class,
+            seed=request.random_seed,
         )
     else:
         eligible_indices = candidate_indices
@@ -1018,9 +990,7 @@ def _build_split_rows(
     fold_scales: list[float] = []
     for validation_fold in range(request.validation_policy.fold_count):
         weights = [
-            float(labels[index]["source_weight"])
-            for index in eligible_indices
-            if assignments[index] != validation_fold
+            float(labels[index]["source_weight"]) for index in eligible_indices if assignments[index] != validation_fold
         ]
         if not weights or math.fsum(weights) <= 0:
             raise ClassificationFeatureSplitError(
@@ -1042,9 +1012,7 @@ def _build_split_rows(
         source_weight = float(label["source_weight"]) if eligible else None
         fold_index = assignments.get(index)
         normalized = tuple(
-            None
-            if not eligible or fold_index == validation_fold
-            else source_weight * fold_scales[validation_fold]
+            None if not eligible or fold_index == validation_fold else source_weight * fold_scales[validation_fold]
             for validation_fold in range(request.validation_policy.fold_count)
         )
         split_rows.append(
@@ -1066,8 +1034,7 @@ def _build_split_rows(
     summary = {
         "eligible_group_count": len({row.group_id for row in split_rows if row.training_eligible}),
         "fold_sizes": [
-            sum(row.fold_index == fold for row in split_rows)
-            for fold in range(request.validation_policy.fold_count)
+            sum(row.fold_index == fold for row in split_rows) for fold in range(request.validation_policy.fold_count)
         ],
         "fold_class_support": fold_support,
         "observed_class_keys": class_keys,
@@ -1201,6 +1168,11 @@ def prepare_feature_split(
     except ValidationError as exc:
         raise ClassificationFeatureSplitError("Classification feature contract is invalid") from exc
     feature_specification, feature_specification_hash = _feature_specification(contract, job)
+    # Everything needed from the core database is now frozen in attached ORM
+    # objects. Release the read-only transaction before loading artifacts and
+    # document vectors so PostgreSQL never sees an idle transaction during the
+    # long-running feature build.
+    db.commit()
     label_content = _read_workflow_bytes(
         snapshot.label_artifact_id,
         actor_user_id=actor_user_id,
@@ -1432,6 +1404,8 @@ def materialize_scoring_features(
     matter = db.get(Matter, snapshot.matter_id)
     if matter is None:
         raise ClassificationFeatureSplitError("Scoring snapshot matter was not found")
+    client_id = matter.client_id
+    db.commit()
     try:
         feature_reference, _ = store_classification_workflow_artifact(
             content=prepared.feature_stream,
@@ -1467,7 +1441,7 @@ def materialize_scoring_features(
             ],
             actor_user_id=actor_user_id,
             tenant_id=snapshot.tenant_id,
-            client_id=matter.client_id,
+            client_id=client_id,
             filename="classification-scoring-features.parquet",
         )
     finally:
@@ -1560,6 +1534,9 @@ def materialize_feature_split(
     if matter is None:
         raise ClassificationFeatureSplitError("Dataset snapshot matter was not found")
     client_id = matter.client_id
+    # Artifact publication uses its own service/session. Do not retain a core
+    # database transaction while uploading the feature and split artifacts.
+    db.commit()
     feature_reference, _ = store_classification_workflow_artifact(
         content=io.BytesIO(prepared.feature_bytes),
         artifact_type=ArtifactType.CLASSIFICATION_FEATURES,

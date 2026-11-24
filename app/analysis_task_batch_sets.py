@@ -75,6 +75,7 @@ class TaskBatchSearchQuery:
     reason: str
     search_definition: dict[str, object]
     quota: int
+    excluded_document_ids: frozenset[uuid.UUID] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -193,9 +194,7 @@ def _search_generation(
             )
         )
     if generation is None:
-        raise AnalysisTaskBatchSetError(
-            "The matter search index must be ready before using a search-backed population"
-        )
+        raise AnalysisTaskBatchSetError("The matter search index must be ready before using a search-backed population")
     return generation
 
 
@@ -236,9 +235,7 @@ def _execution_for_batch_set(
             ),
             "input_manifest_id": str(batch_set.input_manifest_id) if batch_set.input_manifest_id else None,
             "search_index_generation_id": (
-                str(batch_set.search_index_generation_id)
-                if batch_set.search_index_generation_id
-                else None
+                str(batch_set.search_index_generation_id) if batch_set.search_index_generation_id else None
             ),
             "target_batch_size": batch_set.target_batch_size,
             "allocation_policy": batch_set.allocation_policy,
@@ -276,9 +273,7 @@ def create_batch_set(
     notification_parent_id: uuid.UUID | None = None,
 ) -> AnalysisTaskBatchSet:
     if (notification_parent_type is None) != (notification_parent_id is None):
-        raise AnalysisTaskBatchSetError(
-            "Batch Set notification parent type and id must be supplied together"
-        )
+        raise AnalysisTaskBatchSetError("Batch Set notification parent type and id must be supplied together")
     _validate_task_version(matter=matter, task=task, task_version=task_version)
     source_batch = _source_batch(
         db,
@@ -397,9 +392,7 @@ def search_document_ids(
     query_vector = None
     if request.search_mode in {"SEMANTIC", "HYBRID"}:
         query_vector = get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
-    definitions = list(
-        db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id))
-    )
+    definitions = list(db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id)))
     # Assessment retrieval plans are generated with pages no larger than 150.
     # Preserve that bounded query shape when their quotas are scaled for a larger
     # task population instead of issuing a much more expensive 500-result hybrid
@@ -428,11 +421,7 @@ def search_document_ids(
         body.pop("sort", None)
         body["from"] = 0
     else:
-        body["sort"] = (
-            [{"_score": "desc"}, {"document_id": "asc"}]
-            if relevance_order
-            else [{"document_id": "asc"}]
-        )
+        body["sort"] = [{"_score": "desc"}, {"document_id": "asc"}] if relevance_order else [{"document_id": "asc"}]
         body.pop("from", None)
     client = OpenSearchClient(settings)
     document_ids: list[uuid.UUID] = []
@@ -445,9 +434,7 @@ def search_document_ids(
                     raw = client.search(
                         generation.index_name,
                         body,
-                        search_pipeline=(
-                            RRF_SEARCH_PIPELINE if request.search_mode == "HYBRID" else None
-                        ),
+                        search_pipeline=(RRF_SEARCH_PIPELINE if request.search_mode == "HYBRID" else None),
                     )
                     break
                 except OpenSearchError as exc:
@@ -499,9 +486,7 @@ def task_batch_document_ids(
     )
     if excluding_batch_set_id is not None:
         batch_set_query = batch_set_query.where(AnalysisTaskBatchSet.id != excluding_batch_set_id)
-    batch_set_ids = list(
-        db.scalars(batch_set_query.order_by(AnalysisTaskBatchSet.created_at, AnalysisTaskBatchSet.id))
-    )
+    batch_set_ids = list(db.scalars(batch_set_query.order_by(AnalysisTaskBatchSet.created_at, AnalysisTaskBatchSet.id)))
     if not batch_set_ids:
         return [], set()
     document_ids = set(
@@ -524,11 +509,13 @@ def select_task_batch_search_population(
     target_document_count: int,
     settings: Settings,
     control_sample_size: int = 0,
+    additional_excluded_document_ids: set[uuid.UUID] | None = None,
 ) -> TaskBatchSearchPopulation:
     """Resolve one deduplicated population for a task-specific batch set."""
     if task.matter_id != matter.id:
         raise AnalysisTaskBatchSetError("Analysis Task does not belong to this matter")
     prior_batch_set_ids, prior_document_ids = task_batch_document_ids(db, task_id=task.id)
+    externally_excluded_ids = additional_excluded_document_ids or set()
     selected_ids: list[uuid.UUID] = []
     selected_set: set[uuid.UUID] = set()
     selection_reasons: dict[uuid.UUID, list[str]] = {}
@@ -537,6 +524,9 @@ def select_task_batch_search_population(
     for query, planned_request in zip(queries, requested_quotas, strict=True):
         remaining = target_document_count - len(selected_ids)
         requested = min(planned_request, remaining)
+        query_excluded_ids = (
+            prior_document_ids | externally_excluded_ids | set(query.excluded_document_ids) | selected_set
+        )
         try:
             hits = (
                 search_document_ids(
@@ -547,18 +537,19 @@ def select_task_batch_search_population(
                     settings=settings,
                     limit=requested,
                     relevance_order=True,
-                    excluded_document_ids=prior_document_ids | selected_set,
+                    excluded_document_ids=query_excluded_ids,
                 )
                 if requested > 0
                 else []
             )
         except OpenSearchError as exc:
-            raise AnalysisTaskBatchSetError(
-                f'Retrieval query "{query.label}" failed: {exc}'
-            ) from exc
+            raise AnalysisTaskBatchSetError(f'Retrieval query "{query.label}" failed: {exc}') from exc
         accepted_hits: list[uuid.UUID] = []
         for document_id in hits:
-            if document_id in prior_document_ids:
+            # Search providers are expected to honor the exclusion filter, but
+            # enforce it here as well so a stale index or adapter cannot leak an
+            # ineligible document into the frozen population.
+            if document_id in query_excluded_ids:
                 continue
             reasons = selection_reasons.setdefault(document_id, [])
             if query.reason not in reasons:
@@ -580,7 +571,8 @@ def select_task_batch_search_population(
         )
     control_document_ids: list[uuid.UUID] = []
     if control_sample_size:
-        excluded_for_control = prior_document_ids | selected_set
+        query_specific_excluded_ids = set().union(*(set(query.excluded_document_ids) for query in queries))
+        excluded_for_control = prior_document_ids | externally_excluded_ids | query_specific_excluded_ids | selected_set
         for document_id in db.scalars(
             select(MatterDocument.id)
             .where(MatterDocument.matter_id == matter.id)
@@ -697,16 +689,12 @@ def _population_documents(
                 manifest.item_count,
             )
             ready_ids = [
-                uuid.UUID(str(row["matter_document_id"]))
-                for row in rows
-                if row.get("input_status") == "READY"
+                uuid.UUID(str(row["matter_document_id"])) for row in rows if row.get("input_status") == "READY"
             ]
         except (AnalysisInputManifestError, KeyError, TypeError, ValueError) as exc:
             raise AnalysisTaskBatchSetError(f"Input manifest population is invalid: {exc}") from exc
         if len(ready_ids) != manifest.item_count:
-            raise AnalysisTaskBatchSetError(
-                "Batch Set input manifests must contain only ready population rows"
-            )
+            raise AnalysisTaskBatchSetError("Batch Set input manifests must contain only ready population rows")
         documents_by_id = {
             document.id: document
             for document in db.scalars(
@@ -735,8 +723,7 @@ def _population_documents(
 
 def _stable_partitions(document_ids: list[uuid.UUID], target_batch_size: int) -> list[list[uuid.UUID]]:
     return [
-        document_ids[offset : offset + target_batch_size]
-        for offset in range(0, len(document_ids), target_batch_size)
+        document_ids[offset : offset + target_batch_size] for offset in range(0, len(document_ids), target_batch_size)
     ]
 
 
@@ -780,17 +767,13 @@ def _family_partitions(
         raise AnalysisTaskBatchSetError(f"Document family lookup failed: {exc}") from exc
     missing_count = len(set(item_ids).difference(grouping))
     if missing_count:
-        raise AnalysisTaskBatchSetError(
-            f"Document family data is unavailable for {missing_count} selected documents"
-        )
+        raise AnalysisTaskBatchSetError(f"Document family data is unavailable for {missing_count} selected documents")
     units_by_key: dict[str, list[uuid.UUID]] = {}
     ordered_keys: list[str] = []
     for document in documents:
         snapshot = grouping.get(document.collection_item_id)
         key = (
-            f"family:{snapshot.family_id}"
-            if snapshot is not None and snapshot.family_id
-            else f"document:{document.id}"
+            f"family:{snapshot.family_id}" if snapshot is not None and snapshot.family_id else f"document:{document.id}"
         )
         if key not in units_by_key:
             units_by_key[key] = []
@@ -941,11 +924,7 @@ def _mark_children(db: Session, batch_set_id: uuid.UUID, *, status: str, error_m
     values: dict[str, object] = {"status": status, "error_message": error_message}
     if status in {"READY", "FAILED", "CANCELED"}:
         values["completed_at"] = utcnow()
-    db.execute(
-        update(ReviewBatch)
-        .where(ReviewBatch.analysis_task_batch_set_id == batch_set_id)
-        .values(**values)
-    )
+    db.execute(update(ReviewBatch).where(ReviewBatch.analysis_task_batch_set_id == batch_set_id).values(**values))
 
 
 def materialize_batch_set(
@@ -954,9 +933,7 @@ def materialize_batch_set(
     settings: Settings | None = None,
 ) -> AnalysisTaskBatchSet:
     settings = settings or get_settings()
-    batch_set = db.scalar(
-        select(AnalysisTaskBatchSet).where(AnalysisTaskBatchSet.id == batch_set_id).with_for_update()
-    )
+    batch_set = db.scalar(select(AnalysisTaskBatchSet).where(AnalysisTaskBatchSet.id == batch_set_id).with_for_update())
     if batch_set is None:
         raise AnalysisTaskBatchSetError("Analysis Task Batch Set not found")
     if batch_set.status in {"READY", "ARCHIVED"}:
@@ -1023,9 +1000,7 @@ def materialize_batch_set(
         )
         db.commit()
         batch_set = db.scalar(
-            select(AnalysisTaskBatchSet)
-            .where(AnalysisTaskBatchSet.id == batch_set.id)
-            .with_for_update()
+            select(AnalysisTaskBatchSet).where(AnalysisTaskBatchSet.id == batch_set.id).with_for_update()
         )
         if batch_set is None:
             raise AnalysisTaskBatchSetError("Analysis Task Batch Set not found during planning")
@@ -1096,9 +1071,7 @@ def materialize_batch_set(
             batch_set = db.get(AnalysisTaskBatchSet, batch_set.id) or batch_set
 
         batch_set = db.scalar(
-            select(AnalysisTaskBatchSet)
-            .where(AnalysisTaskBatchSet.id == batch_set.id)
-            .with_for_update()
+            select(AnalysisTaskBatchSet).where(AnalysisTaskBatchSet.id == batch_set.id).with_for_update()
         )
         if batch_set is None:
             raise AnalysisTaskBatchSetError("Analysis Task Batch Set not found during finalization")
@@ -1152,9 +1125,7 @@ def materialize_batch_set(
                 failed.completed_at = utcnow()
                 _mark_children(db, batch_set_id, status="CANCELED")
                 db.commit()
-                raise AnalysisTaskBatchSetCanceled(
-                    "Analysis Task Batch Set materialization was canceled"
-                ) from exc
+                raise AnalysisTaskBatchSetCanceled("Analysis Task Batch Set materialization was canceled") from exc
             failed.status = "FAILED"
             failed.error_message = str(exc)[:4000]
             failed.completed_at = utcnow()
@@ -1195,11 +1166,7 @@ def complete_batch_set_materialization(
     db: Session,
     batch_set_id: uuid.UUID,
 ) -> AnalysisTaskBatchSet:
-    batch_set = db.scalar(
-        select(AnalysisTaskBatchSet)
-        .where(AnalysisTaskBatchSet.id == batch_set_id)
-        .with_for_update()
-    )
+    batch_set = db.scalar(select(AnalysisTaskBatchSet).where(AnalysisTaskBatchSet.id == batch_set_id).with_for_update())
     if batch_set is None:
         raise AnalysisTaskBatchSetError("Analysis Task Batch Set not found")
     children = list(

@@ -270,7 +270,9 @@ def download_search_export(
             client_id=matter.client_id,
         )
     except (PermissionError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search export artifact is unavailable") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Search export artifact is unavailable"
+        ) from exc
     expected = {
         "type": artifact.artifact_type == ArtifactType.SEARCH_RESULT_EXPORT,
         "scope": artifact.core_scope_kind == "MATTER" and artifact.core_scope_id == matter.id,
@@ -372,8 +374,42 @@ def _retryable_document_upserts(
     return [
         (operation, durable_errors.get(operation.workflow_id))
         for operation in candidates
-        if operation.status == "FAILED" or operation.workflow_id in durable_errors
+        if not operation.payload.get("operator_canceled")
+        and (operation.status == "FAILED" or operation.workflow_id in durable_errors)
     ]
+
+
+def _requeue_document_upsert(
+    db: Session,
+    operation: SearchProjectionOperation,
+    *,
+    principal: Principal,
+    durable_workflow_status: str | None,
+    retried_at: datetime,
+) -> None:
+    retry_history = operation.payload.get("retry_history")
+    if not isinstance(retry_history, list):
+        retry_history = []
+    operation.payload = {
+        **operation.payload,
+        "retry_history": [
+            *retry_history,
+            {
+                "workflow_id": operation.workflow_id,
+                "attempt_count": operation.attempt_count,
+                "error_message": operation.error_message,
+                "durable_workflow_status": durable_workflow_status,
+                "retried_at": retried_at.isoformat(),
+                "retried_by_user_id": str(principal.user.id),
+            },
+        ],
+    }
+    operation.status = "QUEUED"
+    operation.workflow_id = f"search-projection:{operation.id}:retry:{uuid.uuid4()}"
+    operation.error_message = None
+    operation.started_at = None
+    operation.completed_at = None
+    enqueue_search_projection(db, operation.workflow_id, str(operation.id), priority=100)
 
 
 @router.post("/search", response_model=MatterSearchResponse)
@@ -865,9 +901,10 @@ def list_search_operations(
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> list[SearchProjectionOperation]:
+    settings: Settings = Depends(get_settings),
+) -> list[SearchProjectionOperationRead]:
     _matter(db, matter_id, principal, "job.view")
-    return list(
+    operations = list(
         db.scalars(
             select(SearchProjectionOperation)
             .where(SearchProjectionOperation.matter_id == matter_id)
@@ -875,6 +912,29 @@ def list_search_operations(
             .limit(limit)
         )
     )
+    running = [operation for operation in operations if operation.status == "RUNNING"]
+    try:
+        durable_errors = _durable_error_workflow_statuses(
+            settings,
+            [operation.workflow_id for operation in running],
+        )
+    except Exception:
+        logger.exception("Could not reconcile durable search workflow statuses for matter_id=%s", matter_id)
+        durable_errors = {}
+    return [
+        SearchProjectionOperationRead.model_validate(operation).model_copy(
+            update={
+                "status": "FAILED",
+                "error_message": (
+                    f"Durable workflow ended with {durable_errors[operation.workflow_id]}; "
+                    "this document update can be retried."
+                ),
+            }
+        )
+        if operation.workflow_id in durable_errors
+        else SearchProjectionOperationRead.model_validate(operation)
+        for operation in operations
+    ]
 
 
 @router.get("/search-operations/retryable", response_model=SearchProjectionRetryResponse)
@@ -921,35 +981,74 @@ def retry_failed_search_operations(
         document_ids = operation.payload.get("document_ids")
         if isinstance(document_ids, list):
             document_count += len(document_ids)
-        retry_history = operation.payload.get("retry_history")
-        if not isinstance(retry_history, list):
-            retry_history = []
-        operation.payload = {
-            **operation.payload,
-            "retry_history": [
-                *retry_history,
-                {
-                    "workflow_id": operation.workflow_id,
-                    "attempt_count": operation.attempt_count,
-                    "error_message": operation.error_message,
-                    "durable_workflow_status": durable_workflow_status,
-                    "retried_at": retried_at.isoformat(),
-                    "retried_by_user_id": str(principal.user.id),
-                },
-            ],
-        }
-        operation.status = "QUEUED"
-        operation.workflow_id = f"search-projection:{operation.id}:retry:{uuid.uuid4()}"
-        operation.error_message = None
-        operation.started_at = None
-        operation.completed_at = None
-        enqueue_search_projection(db, operation.workflow_id, str(operation.id), priority=100)
+        _requeue_document_upsert(
+            db,
+            operation,
+            principal=principal,
+            durable_workflow_status=durable_workflow_status,
+            retried_at=retried_at,
+        )
 
     db.commit()
     return SearchProjectionRetryResponse(
         requeued_operation_count=len(operations),
         requeued_document_count=document_count,
     )
+
+
+@router.post(
+    "/search-operations/{operation_id}/retry",
+    response_model=SearchProjectionOperationRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_search_operation(
+    matter_id: uuid.UUID,
+    operation_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SearchProjectionOperation:
+    matter = _matter(db, matter_id, principal, "search.rebuild")
+    operation = db.scalar(
+        select(SearchProjectionOperation)
+        .where(
+            SearchProjectionOperation.id == operation_id,
+            SearchProjectionOperation.matter_id == matter.id,
+        )
+        .with_for_update()
+    )
+    if operation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search operation not found")
+    if operation.kind != "DOCUMENT_UPSERT":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only document-update search operations can be retried",
+        )
+    if operation.payload.get("operator_canceled"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This search operation was canceled by an operator and cannot be retried",
+        )
+    durable_workflow_status: str | None = None
+    if operation.status == "RUNNING":
+        durable_errors = _durable_error_workflow_statuses(settings, [operation.workflow_id])
+        durable_workflow_status = durable_errors.get(operation.workflow_id)
+        if durable_workflow_status is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search operation is still running")
+    elif operation.status != "FAILED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Search operation cannot be retried from status {operation.status}",
+        )
+    _requeue_document_upsert(
+        db,
+        operation,
+        principal=principal,
+        durable_workflow_status=durable_workflow_status,
+        retried_at=datetime.now(timezone.utc),
+    )
+    db.commit()
+    return operation
 
 
 @router.post(

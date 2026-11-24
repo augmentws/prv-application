@@ -2,7 +2,7 @@ import json
 import uuid
 from typing import Any
 
-from sqlalchemy import delete, func, insert, literal, select
+from sqlalchemy import delete, func, insert, literal, or_, select
 from sqlalchemy.orm import Session
 
 from artifact_service.models import (
@@ -31,7 +31,7 @@ def create_collection_selection(
         return existing
 
     selection_data = payload.model_dump(mode="json")
-    matched_ids = collection_item_ids(
+    seed_ids = collection_item_ids(
         collection.id,
         search=payload.q.strip() if payload.q and payload.q.strip() else None,
         custodian_ids=list(dict.fromkeys(payload.custodian_ids)),
@@ -42,7 +42,41 @@ def create_collection_selection(
         file_date_to=payload.file_date_to,
         explicit_item_ids=list(dict.fromkeys(payload.item_ids)) if payload.mode == "EXPLICIT" else None,
     )
+    seed_ids_subquery = seed_ids.subquery("collection_selection_seed_ids")
+    seed_id_values = select(seed_ids_subquery.c.id)
+    seed_count = db.scalar(select(func.count()).select_from(seed_ids_subquery)) or 0
+    matched_ids = seed_id_values
+    if payload.include_complete_families and seed_count:
+        seed_family_ids = select(CollectionItem.family_id).where(
+            CollectionItem.collection_id == collection.id,
+            CollectionItem.id.in_(seed_id_values),
+            CollectionItem.family_id.is_not(None),
+        )
+        seed_parent_ids = select(CollectionItem.parent_collection_item_id).where(
+            CollectionItem.collection_id == collection.id,
+            CollectionItem.id.in_(seed_id_values),
+            CollectionItem.parent_collection_item_id.is_not(None),
+        )
+        matched_ids = select(CollectionItem.id).where(
+            CollectionItem.collection_id == collection.id,
+            or_(
+                CollectionItem.id.in_(seed_id_values),
+                CollectionItem.family_id.in_(seed_family_ids),
+                # The edge checks preserve useful behavior for legacy rows that
+                # predate family IDs. Modern imports use the family-ID branch.
+                CollectionItem.id.in_(seed_parent_ids),
+                CollectionItem.parent_collection_item_id.in_(seed_id_values),
+            ),
+        )
     total_count = db.scalar(select(func.count()).select_from(matched_ids.subquery())) or 0
+    selection_data["family_expansion"] = {
+        "policy": "EXPAND_COMPLETE_FAMILIES_IN_COLLECTION"
+        if payload.include_complete_families
+        else "SEED_DOCUMENTS_ONLY",
+        "seed_document_count": seed_count,
+        "added_document_count": total_count - seed_count,
+        "final_document_count": total_count,
+    }
     selection = CollectionSelection(
         request_id=payload.request_id,
         tenant_id=collection.tenant_id,

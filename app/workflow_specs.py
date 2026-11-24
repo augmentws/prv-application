@@ -120,7 +120,7 @@ MATTER_DEFINITION_EVIDENCE_NARRATIVE_SHADOW_SPEC = WorkflowSpec(
 
 MATTER_ANALYSIS_TASK_COMPILATION_SPEC = WorkflowSpec(
     key="matter_analysis_task_compilation_v1",
-    code_version="2",
+    code_version="3",
     name="Matter Analysis Task compilation",
     description="Compiles a reviewed Task Definition into a provider-neutral Decision Specification.",
     roles=(
@@ -205,6 +205,22 @@ FACT_DEVELOPMENT_SPEC = WorkflowSpec(
     ),
 )
 
+IDENTITY_DOMAIN_RECOMMENDATION_SPEC = WorkflowSpec(
+    key="identity_domain_recommendation_v1",
+    code_version="2",
+    name="Identity domain recommendation",
+    description="Reviews aggregate participant domains for categorized organization proposals without coding documents.",
+    roles=(
+        WorkflowRoleSpec(
+            key="domain_reviewer",
+            input_schema_key="identity_domain_recommendation_input_v1",
+            output_schema_key="identity_domain_recommendation_output_v3",
+            allowed_capabilities=frozenset({"structured_output", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
 WORKFLOW_SPECS = {
     MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
     MATTER_DEFINITION_EVIDENCE_SHADOW_SPEC.key: MATTER_DEFINITION_EVIDENCE_SHADOW_SPEC,
@@ -215,6 +231,7 @@ WORKFLOW_SPECS = {
     MATTER_ANALYSIS_TASK_BATCH_SPEC.key: MATTER_ANALYSIS_TASK_BATCH_SPEC,
     FACT_SPECIFICATION_COMPILATION_SPEC.key: FACT_SPECIFICATION_COMPILATION_SPEC,
     FACT_DEVELOPMENT_SPEC.key: FACT_DEVELOPMENT_SPEC,
+    IDENTITY_DOMAIN_RECOMMENDATION_SPEC.key: IDENTITY_DOMAIN_RECOMMENDATION_SPEC,
 }
 
 

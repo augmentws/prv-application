@@ -488,6 +488,11 @@ Creation produces:
 
 ### Per-document execution
 
+> **Performance correction:** The conditional second evidence request below documents the initial implementation.
+> It is scheduled to be replaced by answer-bound inline evidence and deterministic window evidence aggregation as
+> described in the
+> [Question-Answering Batch Performance Improvement Plan](question-answering-performance-plan.md).
+
 1. Load the preferred faithful source text from Artifact Service.
 2. Build deterministic state from document metadata and the versioned paragraph map.
 3. If the document fits the provider input limit, evaluate all compatible decision questions together without

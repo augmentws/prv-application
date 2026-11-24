@@ -48,6 +48,27 @@ describe("ClassificationScoringRunResults", () => {
           { class_key: "not_responsive", label: "Not responsive", document_count: 60 },
         ],
       } as never;
+      if (path === "/v1/matters/matter-1/classification-models/model-1/scoring-runs/scoring-1/predictions?offset=0&limit=50") return {
+        scoring_run_id: "scoring-1",
+        model_version_id: "version-12345678",
+        ordered_class_keys: ["responsive", "not_responsive"],
+        total: 100,
+        offset: 0,
+        limit: 50,
+        items: [{
+          matter_document_id: "document-1",
+          collection_item_id: "item-1",
+          scope_ordinal: 0,
+          source_vector_content_hash: "a".repeat(64),
+          result_status: "SUCCESS",
+          failure_reason: null,
+          probabilities: [0.82, 0.18],
+          predicted_class_keys: ["responsive"],
+          abstained: false,
+          probability_margin: 0.64,
+          uncertainty: 0.18,
+        }],
+      } as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -63,5 +84,11 @@ describe("ClassificationScoringRunResults", () => {
     expect(screen.getByText(/Responsive: 34 documents/)).toBeInTheDocument();
     expect(screen.getByText(/Not responsive: 60 documents/)).toBeInTheDocument();
     expect(screen.getAllByText("94").length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText("Document predictions")).toBeInTheDocument();
+    expect(screen.getByText("Responsive 82%")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open document" })).toHaveAttribute(
+      "href",
+      "/review/matters/matter-1?document=document-1",
+    );
   });
 });

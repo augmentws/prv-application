@@ -49,6 +49,9 @@ def reconcile_terminal_assessment_workflows(
     if not active:
         return set()
 
+    # DBOS status lookup is remote/system-database I/O. The Core records have
+    # been fully materialized, so release the application transaction first.
+    db.commit()
     try:
         client = get_dbos_client()
         durable_workflows = client.list_workflows(
@@ -83,9 +86,7 @@ def reconcile_terminal_assessment_workflows(
             counts = document_counts.get(assessment.review_batch_run_id, {})
             document_total = sum(counts.values())
             terminal_total = sum(count for status, count in counts.items() if status in _DOCUMENT_TERMINAL_STATUSES)
-            resumed_workflows = list(
-                assessment.configuration_snapshot.get("reconciled_durable_workflow_ids", [])
-            )
+            resumed_workflows = list(assessment.configuration_snapshot.get("reconciled_durable_workflow_ids", []))
             if (
                 assessment.synthesis_result is None
                 and document_total > 0
@@ -120,15 +121,13 @@ def reconcile_terminal_assessment_workflows(
         durable_error = str(durable.error) if durable.error is not None else None
         if durable.status == "SUCCESS":
             message = (
-                "Durable Matter Definition assessment workflow completed without persisting "
-                "a terminal assessment state"
+                "Durable Matter Definition assessment workflow completed without persisting a terminal assessment state"
             )
         elif durable.status == "CANCELLED":
             message = "Durable Matter Definition assessment workflow was cancelled before finalization"
         else:
             message = durable_error or (
-                f"Durable Matter Definition assessment workflow ended with status {durable.status} "
-                "before finalization"
+                f"Durable Matter Definition assessment workflow ended with status {durable.status} before finalization"
             )
         try:
             fail_assessment(db, assessment.id, message)

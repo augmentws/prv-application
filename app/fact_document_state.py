@@ -293,7 +293,12 @@ class FactStateTracker:
             self.db,
             matter_id=self.matter_id,
             kind="DOCUMENT_UPSERT",
-            payload={"document_ids": [str(document_id) for document_id in changed], "reason": "FACT_STATE"},
+            payload={
+                "document_ids": [str(document_id) for document_id in changed],
+                "metadata_definition_ids": [str(installed)],
+                "projection_scope": "MATTER_CODING_FIELDS",
+                "reason": "FACT_STATE",
+            },
             created_by_user_id=requesting_user,
             # Reviewer changes project ahead of agent activity; full rebuilds stay lowest.
             priority=None if self.workflow_run_id is None else AGENT_PROJECTION_PRIORITY,

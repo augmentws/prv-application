@@ -1,11 +1,28 @@
 from app.analysis_tasks import MatterAnalysisTaskConflict, MatterAnalysisTaskInputTooLarge
 from app.decision_engine import DecisionEngineProviderError
 from app.workflows.analysis_task_batch import (
+    BATCH_QUEUE,
+    DOCUMENT_QUEUE,
+    JEV_BATCH_QUEUE,
+    JEV_DOCUMENT_QUEUE,
+    OPENAI_BATCH_QUEUE,
+    OPENAI_DOCUMENT_QUEUE,
+    _batch_queue_for_engine,
+    _document_queue_for_engine,
     _failure_code,
     _failure_is_retryable,
     _failure_message,
     _should_retry_document,
 )
+
+
+def test_document_queues_isolate_provider_backpressure() -> None:
+    assert _batch_queue_for_engine("jev") is JEV_BATCH_QUEUE
+    assert _batch_queue_for_engine("OPENAI-DECISIONS") is OPENAI_BATCH_QUEUE
+    assert _batch_queue_for_engine("future-provider") is BATCH_QUEUE
+    assert _document_queue_for_engine("jev") is JEV_DOCUMENT_QUEUE
+    assert _document_queue_for_engine("OPENAI-DECISIONS") is OPENAI_DOCUMENT_QUEUE
+    assert _document_queue_for_engine("future-provider") is DOCUMENT_QUEUE
 
 
 def test_document_retry_policy_rejects_nonretryable_provider_errors() -> None:

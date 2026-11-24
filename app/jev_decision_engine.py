@@ -178,16 +178,32 @@ def _provider_metadata(response: Any) -> dict[str, Any]:
 
 
 def _decision_payload(request: DecisionRequest, *, state: Any | None = None) -> dict[str, Any]:
+    resolved_state = request.state if state is None else state
+    paragraph_ids = set(_window_paragraph_ids(resolved_state))
+    location_question_keys = {
+        binding.location_question_key for binding in request.evidence_bindings.values()
+    }
+    questions: dict[str, Any] = {}
+    for key, question in request.questions.items():
+        payload = question.model_dump(
+            mode="json",
+            include={"type", "instructions", "criteria"},
+            exclude_none=True,
+        )
+        if key in location_question_keys and isinstance(payload.get("criteria"), dict):
+            payload["criteria"] = {
+                option: criterion
+                for option, criterion in payload["criteria"].items()
+                if option == "no_support"
+                or (
+                    isinstance(criterion, Mapping)
+                    and criterion.get("paragraph_id") in paragraph_ids
+                )
+            }
+        questions[key] = payload
     return {
-        "state": request.state if state is None else state,
-        "questions": {
-            key: question.model_dump(
-                mode="json",
-                include={"type", "instructions", "criteria"},
-                exclude_none=True,
-            )
-            for key, question in request.questions.items()
-        },
+        "state": resolved_state,
+        "questions": questions,
     }
 
 
@@ -220,6 +236,23 @@ def _estimated_input_tokens(
     state: Any | None = None,
 ) -> int:
     return max(1, math.ceil(_payload_characters(request, state=state) / characters_per_token))
+
+
+def planned_jev_request_count(request: DecisionRequest, settings: Settings) -> int:
+    """Return the deterministic pre-provider source-window request count."""
+
+    if (
+        _payload_characters(request) <= settings.typesafe_request_target_characters
+        and _payload_tokens(request) <= settings.typesafe_request_target_tokens
+    ):
+        return 1
+    states = _window_states(
+        request,
+        target_characters=settings.typesafe_request_target_characters,
+        target_tokens=settings.typesafe_request_target_tokens,
+        maximum_windows=settings.typesafe_max_document_windows,
+    )
+    return max(1, len(states))
 
 
 def _document_text(state: Any) -> tuple[str, str] | None:
@@ -369,34 +402,119 @@ def _aggregate_window_answers(
     envelopes: list[DecisionEnvelope],
 ) -> dict[str, DecisionAnswer]:
     combined: dict[str, DecisionAnswer] = {}
+    selected_window_indexes: dict[str, int] = {}
     for key, question in request.questions.items():
         answers = [envelope.answers[key] for envelope in envelopes]
         operator = question.aggregation.operator
         if isinstance(answers[0], NoulDecisionAnswer):
             nouls = cast(list[NoulDecisionAnswer], answers)
-            value = (
-                min(answer.noul for answer in nouls)
+            selected_index = (
+                min(range(len(nouls)), key=lambda index: nouls[index].noul)
                 if operator == "ALL_WINDOWS"
-                else max(answer.noul for answer in nouls)
+                else max(range(len(nouls)), key=lambda index: nouls[index].noul)
             )
-            combined[key] = NoulDecisionAnswer(type="noul", noul=value)
+            combined[key] = nouls[selected_index]
         elif isinstance(answers[0], ChoiceDecisionAnswer):
             choices = cast(list[ChoiceDecisionAnswer], answers)
             if operator == "ALL_WINDOWS":
-                selected = min(choices, key=lambda answer: (answer.confidence, answer.probabilities[answer.choice]))
+                selected_index = min(
+                    range(len(choices)),
+                    key=lambda index: (
+                        choices[index].confidence,
+                        choices[index].probabilities[choices[index].choice],
+                    ),
+                )
             else:
-                selected = max(choices, key=lambda answer: (answer.confidence, answer.probabilities[answer.choice]))
-            combined[key] = selected
+                selected_index = max(
+                    range(len(choices)),
+                    key=lambda index: (
+                        choices[index].confidence,
+                        choices[index].probabilities[choices[index].choice],
+                    ),
+                )
+            combined[key] = choices[selected_index]
         else:
             scores = cast(list[ScoreDecisionAnswer], answers)
             if operator == "ALL_WINDOWS":
-                selected_score = min(scores, key=lambda answer: (answer.score, answer.confidence))
+                selected_index = min(
+                    range(len(scores)),
+                    key=lambda index: (scores[index].score, scores[index].confidence),
+                )
             elif operator == "HIGHEST_CONFIDENCE_CHOICE":
-                selected_score = max(scores, key=lambda answer: answer.confidence)
+                selected_index = max(range(len(scores)), key=lambda index: scores[index].confidence)
             else:
-                selected_score = max(scores, key=lambda answer: (answer.score, answer.confidence))
-            combined[key] = selected_score
+                selected_index = max(
+                    range(len(scores)),
+                    key=lambda index: (scores[index].score, scores[index].confidence),
+                )
+            combined[key] = scores[selected_index]
+        selected_window_indexes[key] = selected_index
+
+    # Inline evidence must come from the same source window that supplied the
+    # final primary answer. Independent aggregation could otherwise attach a
+    # compelling citation from a losing or contradictory window.
+    for binding in request.evidence_bindings.values():
+        selected_index = selected_window_indexes[binding.question_key]
+        envelope = envelopes[selected_index]
+        combined[binding.exists_question_key] = envelope.answers[binding.exists_question_key]
+        location = cast(ChoiceDecisionAnswer, envelope.answers[binding.location_question_key])
+        location_question = cast(
+            ChoiceDecisionQuestion,
+            request.questions[binding.location_question_key],
+        )
+        available_paragraph_ids = set(
+            envelope.provider_metadata.get("window_paragraph_ids") or []
+        )
+        available_options = {
+            option
+            for option, criterion in location_question.criteria.items()
+            if option == "no_support"
+            or (
+                isinstance(criterion, Mapping)
+                and criterion.get("paragraph_id") in available_paragraph_ids
+            )
+        }
+        if location.choice not in available_options:
+            selected_option = max(
+                available_options,
+                key=lambda option: (location.probabilities.get(option, 0.0), option),
+            )
+            location = location.model_copy(update={"choice": selected_option})
+        combined[binding.location_question_key] = location
     return combined
+
+
+def _window_paragraph_ids(state: Any) -> list[str]:
+    if not isinstance(state, dict):
+        return []
+    document = state.get("document")
+    if not isinstance(document, dict) or not isinstance(document.get("paragraphs"), list):
+        return []
+    return [
+        str(paragraph["paragraph_id"])
+        for paragraph in document["paragraphs"]
+        if isinstance(paragraph, dict) and paragraph.get("paragraph_id")
+    ]
+
+
+def _request_for_window(request: DecisionRequest, state: Any) -> DecisionRequest:
+    """Limit evidence-location choices to paragraphs present in this source window."""
+
+    paragraph_ids = set(_window_paragraph_ids(state))
+    questions = dict(request.questions)
+    for binding in request.evidence_bindings.values():
+        location = cast(ChoiceDecisionQuestion, questions[binding.location_question_key])
+        criteria = {
+            option: criterion
+            for option, criterion in location.criteria.items()
+            if option == "no_support"
+            or (
+                isinstance(criterion, Mapping)
+                and criterion.get("paragraph_id") in paragraph_ids
+            )
+        }
+        questions[binding.location_question_key] = location.model_copy(update={"criteria": criteria})
+    return request.model_copy(update={"state": state, "questions": questions})
 
 
 class TypeSafeJevDecisionEngine:
@@ -517,6 +635,22 @@ class TypeSafeJevDecisionEngine:
                 "document_window_target_tokens": target_tokens,
                 "provider_request_ids": request_ids,
                 "aggregation_version": "document-window-v1",
+                "concurrency_wait_ms": sum(
+                    int(envelope.provider_metadata.get("concurrency_wait_ms", 0))
+                    for envelope in envelopes
+                ),
+                "rate_limit_wait_ms": sum(
+                    int(envelope.provider_metadata.get("rate_limit_wait_ms", 0))
+                    for envelope in envelopes
+                ),
+                "provider_call_ms": sum(
+                    int(envelope.provider_metadata.get("provider_call_ms", 0))
+                    for envelope in envelopes
+                ),
+                "retry_wait_ms": sum(
+                    int(envelope.provider_metadata.get("retry_wait_ms", 0))
+                    for envelope in envelopes
+                ),
             },
         )
 
@@ -528,9 +662,19 @@ class TypeSafeJevDecisionEngine:
         target_characters: int,
         target_tokens: int,
     ) -> list[DecisionEnvelope]:
-        window_request = request.model_copy(update={"state": state})
+        window_request = _request_for_window(request, state)
         try:
-            return [await self._evaluate_once(window_request)]
+            envelope = await self._evaluate_once(window_request)
+            return [
+                envelope.model_copy(
+                    update={
+                        "provider_metadata": {
+                            **envelope.provider_metadata,
+                            "window_paragraph_ids": _window_paragraph_ids(state),
+                        }
+                    }
+                )
+            ]
         except DecisionEngineProviderError as exc:
             if not _is_max_tokens_error(exc):
                 raise
@@ -576,15 +720,22 @@ class TypeSafeJevDecisionEngine:
         started_monotonic = self._monotonic()
         response: Any = None
         attempts = 0
+        concurrency_started = time.perf_counter()
+        concurrency_wait_seconds = 0.0
+        rate_limit_wait_seconds = 0.0
+        provider_call_seconds = 0.0
+        retry_wait_seconds = 0.0
         async with self._concurrency_gate:
+            concurrency_wait_seconds = time.perf_counter() - concurrency_started
             for attempt in range(max_retries + 1):
                 attempts = attempt + 1
-                await self._limiter.acquire(
+                limiter_wait = await self._limiter.acquire(
                     (self.provider, model),
                     estimated_input_tokens=estimated_tokens,
                     requests_per_minute=self._settings.typesafe_requests_per_minute,
                     input_tokens_per_minute=self._settings.typesafe_input_tokens_per_minute,
                 )
+                rate_limit_wait_seconds += float(limiter_wait or 0.0)
                 try:
                     client_kwargs: dict[str, Any] = {
                         "api_key": self._settings.typesafe_api_key,
@@ -594,20 +745,25 @@ class TypeSafeJevDecisionEngine:
                     }
                     if self._settings.typesafe_base_url:
                         client_kwargs["base_url"] = self._settings.typesafe_base_url
-                    async with self._client_factory(**client_kwargs) as client:
-                        response = await client.system_one(
-                            state=request.state,
-                            questions=questions,
-                            model=model,
-                            retry=RetryPolicy(max_retries=0),
-                            timeout=timeout,
-                        )
+                    provider_started = time.perf_counter()
+                    try:
+                        async with self._client_factory(**client_kwargs) as client:
+                            response = await client.system_one(
+                                state=request.state,
+                                questions=questions,
+                                model=model,
+                                retry=RetryPolicy(max_retries=0),
+                                timeout=timeout,
+                            )
+                    finally:
+                        provider_call_seconds += time.perf_counter() - provider_started
                     break
                 except (TypeSafeRateLimitError, TypeSafeAPIConnectionError, TypeSafeAPITimeoutError) as exc:
                     if attempt >= max_retries:
                         raise self._provider_error(exc, retryable=True) from exc
                     delay = self._retry_delay(exc, attempt)
                     self._limiter.defer((self.provider, model), delay)
+                    retry_wait_seconds += delay
                     await self._sleep(delay)
                 except TypeSafeAPIError as exc:
                     retryable = exc.status >= 500
@@ -615,6 +771,7 @@ class TypeSafeJevDecisionEngine:
                         raise self._provider_error(exc, retryable=retryable) from exc
                     delay = self._retry_delay(exc, attempt)
                     self._limiter.defer((self.provider, model), delay)
+                    retry_wait_seconds += delay
                     await self._sleep(delay)
         if response is None:  # pragma: no cover - the loop returns or raises
             raise RuntimeError("Jev retry loop exited without a response")
@@ -635,7 +792,13 @@ class TypeSafeJevDecisionEngine:
             started_at=started_at,
             completed_at=completed_at,
             attempts=attempts,
-            provider_metadata=_provider_metadata(response),
+            provider_metadata={
+                **_provider_metadata(response),
+                "concurrency_wait_ms": max(0, round(concurrency_wait_seconds * 1000)),
+                "rate_limit_wait_ms": max(0, round(rate_limit_wait_seconds * 1000)),
+                "provider_call_ms": max(0, round(provider_call_seconds * 1000)),
+                "retry_wait_ms": max(0, round(retry_wait_seconds * 1000)),
+            },
         )
 
     def _retry_delay(self, exc: BaseException, attempt: int) -> float:

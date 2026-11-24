@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.artifact_gateway import WorkflowArtifactReference, store_workflow_artifact
 from app.document_evidence import DocumentMapPlan, ParagraphMap, document_map_coverage
 from app.evidence_first_contracts import (
+    AGGREGATED_EVIDENCE_OBSERVATION_VERSION,
     AggregatedEvidenceObservation,
     EvidenceObservation,
     aggregate_observations,
@@ -799,6 +800,302 @@ def compact_observation_results(
         "observations": [value.model_dump(mode="json") for value in observations],
     }
     return CompactedEvidenceObservations(**payload, result_hash=content_hash(payload))
+
+
+def merge_family_observation_results(
+    members: tuple[
+        tuple[EvidenceEvaluationPlan, CompactedEvidenceObservations], ...
+    ]
+    | list[tuple[EvidenceEvaluationPlan, CompactedEvidenceObservations]],
+) -> tuple[EvidenceEvaluationPlan, CompactedEvidenceObservations]:
+    """Merge complete member evidence into one citation-safe family artifact.
+
+    Member extraction remains independently restartable.  This deterministic
+    projection namespaces source citations by matter document and gives
+    adjudication one immutable family evidence set.
+    """
+
+    if not members:
+        raise ValueError("Family evidence requires at least one member")
+    ordered = sorted(members, key=lambda value: str(value[0].matter_document_id))
+    anchor = ordered[0][0]
+
+    def contract_identity(plan: EvidenceEvaluationPlan) -> tuple[object, ...]:
+        return (
+            plan.tenant_id,
+            plan.client_id,
+            plan.matter_id,
+            plan.task_version_key,
+            plan.guidance_revision_id,
+            plan.guidance_content_hash,
+            plan.criterion_catalog_hash,
+            plan.paragraph_map_version,
+            plan.splitter_version,
+            plan.max_unit_characters,
+            plan.overlap_segments,
+            plan.adjudication_strategy,
+            plan.role_bindings,
+        )
+
+    for plan, observations in ordered:
+        if observations.plan_hash != plan.plan_hash:
+            raise ValueError("Family member observations do not match their evaluation plan")
+        if not observations.evidence_complete:
+            raise ValueError("Family evidence cannot merge an incomplete member")
+        if contract_identity(plan) != contract_identity(anchor):
+            raise ValueError("Family member evidence plans do not share one frozen assessment contract")
+
+    role_budgets: list[dict[str, object]] = []
+    for role_key in sorted(budget.role_key for budget in anchor.role_budgets):
+        member_budgets = [
+            next(budget for budget in plan.role_budgets if budget.role_key == role_key)
+            for plan, _observations in ordered
+        ]
+        role_budgets.append(
+            {
+                "role_key": role_key,
+                "max_requests": sum(budget.max_requests for budget in member_budgets),
+                "repair_request_reserve": sum(
+                    budget.repair_request_reserve for budget in member_budgets
+                ),
+                "max_input_tokens": sum(budget.max_input_tokens for budget in member_budgets),
+                "max_output_tokens": sum(budget.max_output_tokens for budget in member_budgets),
+                "max_elapsed_seconds": sum(
+                    budget.max_elapsed_seconds for budget in member_budgets
+                ),
+            }
+        )
+
+    source_content_hash = content_hash(
+        [
+            {
+                "matter_document_id": str(plan.matter_document_id),
+                "source_content_hash": plan.source_content_hash,
+            }
+            for plan, _observations in ordered
+        ]
+    )
+    context_citation_ids = tuple(
+        f"document:{plan.matter_document_id}:{citation_id}"
+        for plan, _observations in ordered
+        for citation_id in plan.document_context_citation_ids
+    )
+    document_context_hash = (
+        content_hash(
+            [
+                {
+                    "matter_document_id": str(plan.matter_document_id),
+                    "document_context_hash": plan.document_context_hash,
+                }
+                for plan, _observations in ordered
+            ]
+        )
+        if context_citation_ids
+        else None
+    )
+
+    units: list[dict[str, object]] = []
+    selected_attempts: list[dict[str, object]] = []
+    merged_observations: list[dict[str, object]] = []
+    source_offset = 0
+    unit_ordinal = 0
+    for plan, observations in ordered:
+        document_prefix = f"document:{plan.matter_document_id}:"
+        selected_by_unit = {value.unit_id: value for value in observations.selected_attempts}
+        family_unit_ids = {
+            unit.unit_id: content_hash(
+                {
+                    "family_member_document_id": str(plan.matter_document_id),
+                    "member_unit_id": unit.unit_id,
+                }
+            )
+            for unit in plan.extraction_units
+        }
+        for unit in plan.extraction_units:
+            unit_ordinal += 1
+            units.append(
+                {
+                    "unit_id": family_unit_ids[unit.unit_id],
+                    "ordinal": unit_ordinal,
+                    "parent_unit_id": (
+                        family_unit_ids.get(unit.parent_unit_id) if unit.parent_unit_id else None
+                    ),
+                    "refinement_depth": unit.refinement_depth,
+                    "input_character_count": unit.input_character_count,
+                    "source_char_start": source_offset + unit.source_char_start,
+                    "source_char_end": source_offset + unit.source_char_end,
+                    "segments": [
+                        {
+                            **segment.model_dump(mode="json"),
+                            "paragraph_id": f"{document_prefix}{segment.paragraph_id}",
+                            "char_start": source_offset + segment.char_start,
+                            "char_end": source_offset + segment.char_end,
+                        }
+                        for segment in unit.segments
+                    ],
+                }
+            )
+            selected = selected_by_unit.get(unit.unit_id)
+            if selected is None:
+                raise ValueError("Complete family member evidence is missing a selected unit")
+            selected_attempts.append(
+                {
+                    "unit_id": family_unit_ids[selected.unit_id],
+                    "unit_ordinal": unit_ordinal,
+                    "attempt": selected.attempt,
+                    "status": selected.status,
+                }
+            )
+        for observation in observations.observations:
+            citation_ids = tuple(
+                f"{document_prefix}{citation_id}"
+                for citation_id in observation.citation_ids
+            )
+            merged_observations.append(
+                {
+                    "version": AGGREGATED_EVIDENCE_OBSERVATION_VERSION,
+                    "observation_id": content_hash(
+                        {
+                            "version": AGGREGATED_EVIDENCE_OBSERVATION_VERSION,
+                            "source_hash": source_content_hash,
+                            "matter_document_id": str(plan.matter_document_id),
+                            "criterion_key": observation.criterion_key,
+                            "signal_type": observation.signal_type,
+                            "fact": " ".join(observation.fact.casefold().split()),
+                            "citation_ids": citation_ids,
+                        }
+                    ),
+                    "criterion_key": observation.criterion_key,
+                    "signal_type": observation.signal_type,
+                    "fact": observation.fact,
+                    "citation_ids": citation_ids,
+                    "source_unit_ids": tuple(
+                        family_unit_ids[source_unit_id]
+                        for source_unit_id in observation.source_unit_ids
+                    ),
+                }
+            )
+        source_offset += plan.source_length
+
+    plan_payload = {
+        "version": ANALYSIS_EVALUATION_PLAN_VERSION,
+        "execution_mode": "EVIDENCE_FIRST",
+        "tenant_id": anchor.tenant_id,
+        "client_id": anchor.client_id,
+        "matter_id": anchor.matter_id,
+        "matter_document_id": anchor.matter_document_id,
+        "collection_item_id": anchor.collection_item_id,
+        "source_artifact_id": anchor.source_artifact_id,
+        "source_content_hash": source_content_hash,
+        "source_length": source_offset,
+        "document_context_hash": document_context_hash,
+        "document_context_citation_ids": list(context_citation_ids),
+        "task_version_key": f"{anchor.task_version_key}:family-v1",
+        "guidance_revision_id": anchor.guidance_revision_id,
+        "guidance_content_hash": anchor.guidance_content_hash,
+        "criterion_catalog_hash": anchor.criterion_catalog_hash,
+        "paragraph_map_version": "family-evidence-map-v1",
+        "splitter_version": "family-evidence-merge-v1",
+        "max_unit_characters": max(plan.max_unit_characters for plan, _ in ordered),
+        "overlap_segments": max(plan.overlap_segments for plan, _ in ordered),
+        "adjudication_strategy": "PER_CRITERION",
+        "role_bindings": [value.model_dump(mode="json") for value in anchor.role_bindings],
+        "role_budgets": role_budgets,
+        "extraction_units": units,
+    }
+    family_plan = EvidenceEvaluationPlan(**plan_payload, plan_hash=content_hash(plan_payload))
+    result_payload = {
+        "version": ANALYSIS_OBSERVATIONS_VERSION,
+        "plan_hash": family_plan.plan_hash,
+        "source_content_hash": family_plan.source_content_hash,
+        "coverage_status": "COMPLETE",
+        "evidence_complete": True,
+        "selected_attempts": selected_attempts,
+        "missing_unit_ids": [],
+        "omitted_ranges": [],
+        "material_adjustment_count": sum(
+            observations.material_adjustment_count for _plan, observations in ordered
+        ),
+        "observations": merged_observations,
+    }
+    family_observations = CompactedEvidenceObservations(
+        **result_payload,
+        result_hash=content_hash(result_payload),
+    )
+    return family_plan, family_observations
+
+
+def scope_family_observation_results(
+    plan: EvidenceEvaluationPlan,
+    observations: CompactedEvidenceObservations,
+    *,
+    target_document_id: uuid.UUID,
+) -> CompactedEvidenceObservations:
+    """Project one member's evidence from an immutable family artifact.
+
+    Family extraction namespaces every source paragraph and context citation with
+    the matter document that was being evaluated.  Adjudication must retain the
+    family artifact as provenance while admitting only observations produced for
+    the target document.  Otherwise one family decision is copied to a privileged
+    parent and its non-privileged attachments alike.
+    """
+
+    if observations.plan_hash != plan.plan_hash:
+        raise ValueError("Family observations do not match their evaluation plan")
+    prefix = f"document:{target_document_id}:"
+    target_units = {
+        unit.unit_id
+        for unit in plan.extraction_units
+        if any(segment.paragraph_id.startswith(prefix) for segment in unit.segments)
+    }
+    if not target_units:
+        raise ValueError("Target document is not represented in the family evidence plan")
+
+    selected_attempts = tuple(
+        value for value in observations.selected_attempts if value.unit_id in target_units
+    )
+    missing_unit_ids = tuple(
+        value for value in observations.missing_unit_ids if value in target_units
+    )
+    omitted_ranges = tuple(
+        value for value in observations.omitted_ranges if value.paragraph_id.startswith(prefix)
+    )
+    scoped_observations = tuple(
+        value
+        for value in observations.observations
+        if any(citation_id.startswith(prefix) for citation_id in value.citation_ids)
+    )
+    if len(selected_attempts) + len(missing_unit_ids) != len(target_units):
+        raise ValueError("Target family evidence coverage cannot be reconstructed")
+
+    coverage_status = "COMPLETE" if not omitted_ranges else "PARTIAL"
+    evidence_complete = (
+        observations.evidence_complete
+        and coverage_status == "COMPLETE"
+        and not missing_unit_ids
+    )
+    payload = {
+        "version": ANALYSIS_OBSERVATIONS_VERSION,
+        # The persisted family plan remains the immutable provenance source.
+        "plan_hash": plan.plan_hash,
+        "source_content_hash": content_hash(
+            {
+                "family_source_content_hash": observations.source_content_hash,
+                "target_document_id": str(target_document_id),
+            }
+        ),
+        "coverage_status": coverage_status,
+        "evidence_complete": evidence_complete,
+        "selected_attempts": [value.model_dump(mode="json") for value in selected_attempts],
+        "missing_unit_ids": list(missing_unit_ids),
+        "omitted_ranges": [value.model_dump(mode="json") for value in omitted_ranges],
+        "material_adjustment_count": 0 if evidence_complete else observations.material_adjustment_count,
+        "observations": [value.model_dump(mode="json") for value in scoped_observations],
+    }
+    return CompactedEvidenceObservations(
+        **payload,
+        result_hash=content_hash(payload),
+    )
 
 
 _OBSERVATIONS_SCHEMA = pa.schema(

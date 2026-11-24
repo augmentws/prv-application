@@ -217,4 +217,40 @@ describe("SearchIndexPanel", () => {
 
     await waitFor(() => expect(onRetryFailed).toHaveBeenCalledOnce());
   });
+
+  it("retries one failed document update from its operation row", async () => {
+    const user = userEvent.setup();
+    const onRetryOperation = vi.fn().mockResolvedValue(undefined);
+    const failed = {
+      ...completedOperation,
+      id: "operation-interrupted",
+      kind: "DOCUMENT_UPSERT",
+      status: "FAILED",
+      payload: { document_ids: ["document-1"] },
+      error_message: "Durable workflow ended with ERROR; this document update can be retried.",
+      completed_at: null,
+    } satisfies SearchProjectionOperationRead;
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[failed]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} retryableOperationCount={1} retryableDocumentCount={1} onRetryOperation={onRetryOperation} />);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(onRetryOperation).toHaveBeenCalledWith("operation-interrupted"));
+  });
+
+  it("shows operator-canceled updates without offering a retry", () => {
+    const canceled = {
+      ...completedOperation,
+      id: "operation-canceled",
+      kind: "DOCUMENT_UPSERT",
+      status: "FAILED",
+      payload: { document_ids: ["document-1"], operator_canceled: true },
+      error_message: "Canceled by operator before field-scoped projection repair",
+    } satisfies SearchProjectionOperationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[canceled]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} onRetryOperation={vi.fn()} />);
+
+    expect(screen.getByText("Canceled")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Requeue failed jobs" })).not.toBeInTheDocument();
+  });
 });

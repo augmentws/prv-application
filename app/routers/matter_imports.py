@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.artifact_gateway import (
     ensure_collection_scope,
+    get_collection_item_analysis_input_snapshots,
     get_collection_item_read,
+    get_collection_item_relationship_snapshots,
     read_artifact_bytes,
     remove_selection,
 )
@@ -38,6 +40,8 @@ from app.models import (
     MetadataDefinition,
 )
 from app.schemas import (
+    MatterDocumentFamilyMemberRead,
+    MatterDocumentFamilyRead,
     MatterDocumentImportCreate,
     MatterDocumentImportRead,
     MatterDocumentMetadataImportCreate,
@@ -650,7 +654,9 @@ def import_matter_document_metadata(
                 payload={
                     "document_ids": sorted(
                         str(document_id) for document_id in changed_document_ids
-                    )
+                    ),
+                    "metadata_definition_ids": [str(definition.id)],
+                    "projection_scope": "MATTER_CODING_FIELDS",
                 },
                 created_by_user_id=principal.user.id,
             )
@@ -712,6 +718,125 @@ def get_matter_document_collection_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.get(
+    "/matters/{matter_id}/documents/{document_id}/family",
+    response_model=MatterDocumentFamilyRead,
+)
+def get_matter_document_family(
+    matter_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterDocumentFamilyRead:
+    matter = _matter(db, matter_id, principal, "document.view")
+    document = _matter_document(db, matter.id, document_id)
+    tenant_id = matter.client.tenant_id
+    client_id = matter.client_id
+
+    try:
+        current_relationship = get_collection_item_relationship_snapshots(
+            item_ids=[document.collection_item_id],
+            actor_user_id=principal.user.id,
+            tenant_id=tenant_id,
+            client_id=client_id,
+        ).get(document.collection_item_id)
+        if current_relationship is None:
+            raise ValueError("Collection item relationship data is unavailable")
+
+        parent_item_id = current_relationship.parent_item_id
+        root_relationship = current_relationship
+        if parent_item_id is not None:
+            root_relationship = get_collection_item_relationship_snapshots(
+                item_ids=[parent_item_id],
+                actor_user_id=principal.user.id,
+                tenant_id=tenant_id,
+                client_id=client_id,
+            ).get(parent_item_id)
+            if root_relationship is None:
+                raise ValueError("Parent collection item relationship data is unavailable")
+
+        child_item_ids = list(root_relationship.child_item_ids)
+        related_item_ids = list(dict.fromkeys([*([parent_item_id] if parent_item_id else []), *child_item_ids]))
+        item_snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=related_item_ids or [document.collection_item_id],
+            actor_user_id=principal.user.id,
+            tenant_id=tenant_id,
+            client_id=client_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    matter_documents_by_item = {
+        value.collection_item_id: value
+        for value in db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.collection_item_id.in_(related_item_ids),
+            )
+        )
+    } if related_item_ids else {}
+
+    def member(
+        item_id: uuid.UUID,
+        *,
+        identifier: str | None,
+        relationship: str,
+    ) -> MatterDocumentFamilyMemberRead:
+        snapshot = item_snapshots.get(item_id)
+        related_document = matter_documents_by_item.get(item_id)
+        filename = snapshot.original_filename if snapshot is not None else identifier or str(item_id)
+        display_name = snapshot.email_subject if snapshot is not None and snapshot.email_subject else filename
+        return MatterDocumentFamilyMemberRead(
+            matter_document_id=related_document.id if related_document is not None else None,
+            collection_item_id=item_id,
+            identifier=identifier or filename,
+            display_name=display_name,
+            record_type=snapshot.record_type if snapshot is not None else "OTHER",
+            relationship=relationship,
+            is_current=item_id == document.collection_item_id,
+            available_in_matter=related_document is not None,
+        )
+
+    parent = (
+        member(
+            parent_item_id,
+            identifier=current_relationship.parent_identifier or current_relationship.parent_source_item_id,
+            relationship="PARENT",
+        )
+        if parent_item_id is not None
+        else None
+    )
+    child_identifiers = dict(
+        zip(root_relationship.child_item_ids, root_relationship.child_identifiers, strict=False)
+    )
+    child_source_ids = dict(
+        zip(root_relationship.child_item_ids, root_relationship.child_source_item_ids, strict=False)
+    )
+    children = [
+        member(
+            item_id,
+            identifier=child_identifiers.get(item_id) or child_source_ids.get(item_id),
+            relationship="ATTACHMENT",
+        )
+        for item_id in child_item_ids
+    ]
+    unavailable_member_count = sum(
+        not value.available_in_matter
+        for value in [*([parent] if parent is not None else []), *children]
+    )
+    current_role = "ATTACHMENT" if parent_item_id is not None else "PARENT" if children else "STANDALONE"
+    return MatterDocumentFamilyRead(
+        family_id=current_relationship.family_id or root_relationship.family_id,
+        current_document_id=document.id,
+        current_role=current_role,
+        parent=parent,
+        children=children,
+        unavailable_member_count=unavailable_member_count,
+    )
 
 
 @router.get("/matters/{matter_id}/documents/{document_id}/content")

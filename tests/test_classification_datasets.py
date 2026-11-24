@@ -479,12 +479,14 @@ def test_one_vs_rest_intersects_equal_authority_source_values(
     assert created.status_code == 201, created.text
     snapshot = created.json()["snapshot"]
     assert snapshot["labeled_count"] == 3
-    assert next(
-        warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_INTERSECTED"
-    )["count"] == 1
-    assert next(
-        warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_EXCLUDED"
-    )["count"] == 1
+    assert (
+        next(warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_INTERSECTED")["count"]
+        == 1
+    )
+    assert (
+        next(warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_EXCLUDED")["count"]
+        == 1
+    )
     rows = read_workflow_parquet(client, root_token, snapshot["label_artifact_id"])
     intersected = next(row for row in rows if row["matter_document_id"] == str(documents[0].id))
     assert intersected["raw_value_keys"] == ["responsive"]
@@ -575,11 +577,7 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
     assert snapshot["analysis_input_manifest_id"] is not None
     assert snapshot["aggregate_hash"] == preview_data["aggregate_hash"]
     label_rows = read_workflow_parquet(client, root_token, snapshot["label_artifact_id"])
-    labeled = {
-        row["matter_document_id"]: row
-        for row in label_rows
-        if row["resolution_status"] == "LABELED"
-    }
+    labeled = {row["matter_document_id"]: row for row in label_rows if row["resolution_status"] == "LABELED"}
     assert labeled[str(documents[0].id)]["source_kind"] == "ADJUDICATED_REVIEW"
     assert labeled[str(documents[0].id)]["source_weight"] == 1.0
     assert len(json.loads(labeled[str(documents[0].id)]["candidate_claims_json"])) == 2
@@ -699,6 +697,62 @@ def test_dynamic_text_classes_are_discovered_and_frozen_per_snapshot(
     assert frozen_first.json()["ordered_class_keys"] == ["Not responsive", "Responsive"]
 
 
+def test_dynamic_boolean_binary_labels_are_mapped_after_class_discovery(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Dynamic Boolean")
+    definition = create_field(
+        client,
+        root_token,
+        matter["id"],
+        key="dynamic_boolean_target",
+        field_type="BOOLEAN",
+    )
+    documents = add_documents(matter["id"], root_admin.id, 2)
+    configure_artifact_gateway(monkeypatch, documents)
+    for document, value in zip(documents, [False, True], strict=True):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value=value,  # type: ignore[arg-type]
+        )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        strategy="BINARY",
+        dynamic_classes=True,
+        sources=[
+            {
+                "kind": "MATTER_ASSERTED",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+            }
+        ],
+    )
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots",
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+
+    assert response.status_code == 201, response.text
+    snapshot = response.json()["snapshot"]
+    assert snapshot["ordered_class_keys"] == ["false", "true"]
+    assert snapshot["class_support"] == {"false": 1, "true": 1}
+    assert snapshot["labeled_count"] == 2
+    assert snapshot["excluded_count"] == 0
+
+
 def test_hierarchical_text_classes_are_projected_to_configured_level(
     client: TestClient,
     root_token: str,
@@ -761,10 +815,10 @@ def test_hierarchical_text_classes_are_projected_to_configured_level(
     assert distribution.status_code == 200, distribution.text
     assert distribution.json()["labeled_document_count"] == 3
     assert distribution.json()["unlabeled_document_count"] == 1
-    assert {
-        value["class_key"]: value["document_count"]
-        for value in distribution.json()["class_counts"]
-    } == {"Projects/Alpha": 2, "Projects/Beta": 1}
+    assert {value["class_key"]: value["document_count"] for value in distribution.json()["class_counts"]} == {
+        "Projects/Alpha": 2,
+        "Projects/Beta": 1,
+    }
 
     base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
     snapshot_response = client.post(
@@ -803,10 +857,7 @@ def test_target_distribution_counts_current_coding_for_matter_and_batch_scope(
             value=value,
         )
 
-    endpoint = (
-        f"/v1/matters/{matter['id']}/classification-models"
-        f"/targets/{definition['id']}/distribution"
-    )
+    endpoint = f"/v1/matters/{matter['id']}/classification-models/targets/{definition['id']}/distribution"
     matter_distribution = client.post(
         endpoint,
         headers=auth(root_token),
@@ -822,10 +873,7 @@ def test_target_distribution_counts_current_coding_for_matter_and_batch_scope(
     assert matter_data["population_count"] == 4
     assert matter_data["labeled_document_count"] == 3
     assert matter_data["unlabeled_document_count"] == 1
-    assert {
-        item["class_key"]: item["document_count"]
-        for item in matter_data["class_counts"]
-    } == {
+    assert {item["class_key"]: item["document_count"] for item in matter_data["class_counts"]} == {
         "needs_review": 0,
         "not_responsive": 1,
         "responsive": 2,
@@ -852,6 +900,108 @@ def test_target_distribution_counts_current_coding_for_matter_and_batch_scope(
     assert batch_distribution.json()["population_count"] == 2
     assert batch_distribution.json()["labeled_document_count"] == 1
     assert batch_distribution.json()["unlabeled_document_count"] == 1
+
+
+def test_target_distribution_counts_pinned_reviewer_coding(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Reviewer distribution")
+    definition = create_field(client, root_token, matter["id"], key="reviewer_distribution_target")
+    documents = add_documents(matter["id"], root_admin.id, 4)
+    batch_id, reviewer_coding_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=documents,
+        user_id=root_admin.id,
+        values={
+            documents[0].id: ["responsive"],
+            documents[1].id: ["not_responsive"],
+            documents[2].id: ["responsive"],
+        },
+    )
+
+    response = client.post(
+        (f"/v1/matters/{matter['id']}/classification-models/targets/{definition['id']}/distribution"),
+        headers=auth(root_token),
+        json={
+            "training_scope": {
+                "scope_type": "REVIEW_BATCH",
+                "scope_id": str(batch_id),
+            },
+            "label_source": {
+                "kind": "HUMAN_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1,
+                "source_reference_id": str(reviewer_coding_id),
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["population_count"] == 4
+    assert data["labeled_document_count"] == 3
+    assert data["unlabeled_document_count"] == 1
+    assert {item["class_key"]: item["document_count"] for item in data["class_counts"]} == {
+        "needs_review": 0,
+        "not_responsive": 1,
+        "responsive": 2,
+    }
+
+
+def test_review_batch_population_and_labels_share_sequence_order(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Batch row order")
+    definition = create_field(client, root_token, matter["id"], key="batch_row_order_target")
+    documents = add_documents(matter["id"], root_admin.id, 3)
+    sequence_order = sorted(documents, key=lambda document: document.id, reverse=True)
+    configure_artifact_gateway(monkeypatch, documents)
+    batch_id, reviewer_coding_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=sequence_order,
+        user_id=root_admin.id,
+        values={
+            sequence_order[0].id: ["responsive"],
+            sequence_order[1].id: ["not_responsive"],
+            sequence_order[2].id: ["responsive"],
+        },
+    )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        sources=[
+            {
+                "kind": "HUMAN_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+                "source_reference_id": str(reviewer_coding_id),
+            }
+        ],
+    )
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots",
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "REVIEW_BATCH", str(batch_id)),
+    )
+
+    assert response.status_code == 201, response.text
+    snapshot = response.json()["snapshot"]
+    population = read_workflow_parquet(client, root_token, snapshot["population_artifact_id"])
+    labels = read_workflow_parquet(client, root_token, snapshot["label_artifact_id"])
+    expected_ids = [str(document.id) for document in sequence_order]
+    assert [row["matter_document_id"] for row in population] == expected_ids
+    assert [row["matter_document_id"] for row in labels] == expected_ids
 
 
 def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
@@ -921,9 +1071,7 @@ def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
     )
     assert wrong.status_code == 200
     assert wrong.json()["can_materialize"] is False
-    assert "REVIEW_BATCH_WRONG_MATTER" in {
-        issue["code"] for issue in wrong.json()["blocking_errors"]
-    }
+    assert "REVIEW_BATCH_WRONG_MATTER" in {issue["code"] for issue in wrong.json()["blocking_errors"]}
 
 
 def test_multiclass_reviewer_conflicts_are_reported(
@@ -1246,7 +1394,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
                 "kind": "MATTER_ASSERTED",
                 "authority": "SILVER",
                 "source_weight": 0.5,
-            }
+            },
         ],
     )
     base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
@@ -1269,9 +1417,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
     monkeypatch.setattr(
         "app.classification_features.load_current_chunk_vector_artifacts",
         lambda collection_item_ids, **_: {
-            item_id: vector_artifacts[item_id]
-            for item_id in collection_item_ids
-            if item_id in vector_artifacts
+            item_id: vector_artifacts[item_id] for item_id in collection_item_ids if item_id in vector_artifacts
         },
     )
     endpoint = f"{base}/{snapshot['id']}/features-and-splits"
@@ -1297,9 +1443,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
     assert ready["feature_specification"]["embedding_job_id"] == str(job.id)
     assert ready["split_specification"]["algorithm"]["version"] == 2
     assert ready["training_aggregate_hash"]
-    assert {
-        warning["code"] for warning in ready["warnings"]
-    } >= {
+    assert {warning["code"] for warning in ready["warnings"]} >= {
         "MISSING_FEATURES_EXCLUDED",
         "FAILED_FEATURES_EXCLUDED",
         "NEAR_DUPLICATE_GROUPING_UNAVAILABLE",
@@ -1333,25 +1477,16 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
         ready["split_artifact_id"],
     )
     splits_by_document = {row["matter_document_id"]: row for row in split_rows}
+    assert splits_by_document[str(documents[0].id)]["group_id"] == splits_by_document[str(documents[1].id)]["group_id"]
     assert (
-        splits_by_document[str(documents[0].id)]["group_id"]
-        == splits_by_document[str(documents[1].id)]["group_id"]
-    )
-    assert (
-        splits_by_document[str(documents[0].id)]["fold_index"]
-        == splits_by_document[str(documents[1].id)]["fold_index"]
+        splits_by_document[str(documents[0].id)]["fold_index"] == splits_by_document[str(documents[1].id)]["fold_index"]
     )
     for fold in range(2):
-        training_rows = [
-            row
-            for row in split_rows
-            if row["normalized_training_weights"][fold] is not None
-        ]
+        training_rows = [row for row in split_rows if row["normalized_training_weights"][fold] is not None]
         training_weights = [row["normalized_training_weights"][fold] for row in training_rows]
         assert abs(sum(training_weights) / len(training_weights) - 1.0) < 1e-12
         normalization_ratios = {
-            round(row["normalized_training_weights"][fold] / row["source_weight"], 12)
-            for row in training_rows
+            round(row["normalized_training_weights"][fold] / row["source_weight"], 12) for row in training_rows
         }
         assert len(normalization_ratios) == 1
     assert {row["source_weight"] for row in split_rows if row["training_eligible"]} == {0.5, 1.0}
@@ -1366,9 +1501,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
 
     with TestingSessionLocal() as db:
         audit = db.scalar(
-            select(AuditRecord).where(
-                AuditRecord.action == "classification_dataset_snapshot.ready_for_training"
-            )
+            select(AuditRecord).where(AuditRecord.action == "classification_dataset_snapshot.ready_for_training")
         )
         assert audit is not None
         assert audit.details["training_aggregate_hash"] == ready["training_aggregate_hash"]
@@ -1440,9 +1573,7 @@ def test_feature_split_rejects_class_confined_to_one_connected_group(
     }
     monkeypatch.setattr(
         "app.classification_features.load_current_chunk_vector_artifacts",
-        lambda collection_item_ids, **_: {
-            item_id: vectors[item_id] for item_id in collection_item_ids
-        },
+        lambda collection_item_ids, **_: {item_id: vectors[item_id] for item_id in collection_item_ids},
     )
     response = client.post(
         f"{base}/{snapshot['id']}/features-and-splits",
@@ -1481,13 +1612,7 @@ def test_one_vs_rest_feature_split_excludes_unsupported_class(
     documents = add_documents(matter["id"], root_admin.id, 14)
     configure_artifact_gateway(monkeypatch, documents)
     values = {
-        document.id: [
-            "responsive"
-            if index < 6
-            else "needs_review"
-            if index < 12
-            else "not_responsive"
-        ]
+        document.id: ["responsive" if index < 6 else "needs_review" if index < 12 else "not_responsive"]
         for index, document in enumerate(documents)
     }
     _, review_run_id = create_review_source(
@@ -1538,9 +1663,7 @@ def test_one_vs_rest_feature_split_excludes_unsupported_class(
     }
     monkeypatch.setattr(
         "app.classification_features.load_current_chunk_vector_artifacts",
-        lambda collection_item_ids, **_: {
-            item_id: vectors[item_id] for item_id in collection_item_ids
-        },
+        lambda collection_item_ids, **_: {item_id: vectors[item_id] for item_id in collection_item_ids},
     )
     response = client.post(
         f"{base}/{snapshot['id']}/features-and-splits",
@@ -1578,9 +1701,5 @@ def test_one_vs_rest_feature_split_excludes_unsupported_class(
             "fold_negative_support": None,
         }
     ]
-    assert ready["split_specification"]["summary"]["observed_class_keys"] == snapshot[
-        "ordered_class_keys"
-    ]
-    assert ready["split_specification"]["summary"]["trained_class_keys"] == ready[
-        "trained_class_keys"
-    ]
+    assert ready["split_specification"]["summary"]["observed_class_keys"] == snapshot["ordered_class_keys"]
+    assert ready["split_specification"]["summary"]["trained_class_keys"] == ready["trained_class_keys"]
