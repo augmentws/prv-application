@@ -233,7 +233,9 @@ These observations are recorded so they are not accidentally treated as producti
 - MinIO currently publishes `9000` and `9001` on all host interfaces and has `restart=no`.
 - MinIO data is persisted through the host bind mount `/home/petefc/augment.ws/prv-data/minio-data`.
 - OpenSearch currently publishes `9200` and `9600` on all host interfaces and uses `restart=unless-stopped`.
-- OpenSearch data is persisted in the Docker volume `prv-application_pvr_opensearch`.
+- OpenSearch data is persisted through the host bind mount configured by
+  `PVR_OPENSEARCH_DATA_DIR` (default:
+  `/home/petefc/augment.ws/prv-data/opensearch-data`).
 - OpenSearch currently has a 64 KiB `memlock` limit even though memory locking is requested.
 - The live containers were created with settings that differ from the current checked-in `compose.yaml`, which now binds published ports to loopback.
 - The current environment is intentionally being kept simple because it is on a trusted private network. These exceptions must be revisited rather than copied into production.
