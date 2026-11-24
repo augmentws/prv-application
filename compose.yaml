@@ -61,7 +61,11 @@ services:
       timeout: 5s
       retries: 20
     volumes:
-      - pvr_opensearch:/usr/share/opensearch/data
+      - type: bind
+        source: ${PVR_OPENSEARCH_DATA_DIR:-/home/petefc/augment.ws/prv-data/opensearch-data}
+        target: /usr/share/opensearch/data
+        bind:
+          create_host_path: false
 
   embedding-api:
     profiles: ["split", "embeddings"]
@@ -364,5 +368,4 @@ services:
 volumes:
   pvr_core_postgres:
   pvr_artifact_minio:
-  pvr_opensearch:
   pvr_embedding_models:
