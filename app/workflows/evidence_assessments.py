@@ -21,6 +21,7 @@ from app.evidence_adjudication_launcher import (
     prepare_adjudication_shadow_launch,
 )
 from app.evidence_first_launcher import (
+    EvidenceInputUnavailableError,
     _require_shadow_operator,
     execute_prepared_evidence_shadow,
     execute_prepared_evidence_unit,
@@ -94,7 +95,12 @@ _STAGE_SPECS = {
 }
 
 
-def _frozen_stage_configuration(db, *, tenant_id: uuid.UUID) -> dict[str, dict[str, Any]]:
+def _frozen_stage_configuration(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    model_overrides: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
     stages: dict[str, dict[str, Any]] = {}
     settings = get_settings()
     for stage, spec in _STAGE_SPECS.items():
@@ -106,7 +112,10 @@ def _frozen_stage_configuration(db, *, tenant_id: uuid.UUID) -> dict[str, dict[s
         snapshot = binding_snapshot(resolved)
         role_key = spec.roles[0].key
         _binding, _definition, version = resolved[role_key]
-        resolved_model = resolve_agent_model(version.model_key, settings)
+        resolved_model = (model_overrides or {}).get(stage) or resolve_agent_model(
+            version.model_key,
+            settings,
+        )
         stages[stage] = {
             "workflow_key": spec.key,
             "code_version": spec.code_version,
@@ -135,6 +144,7 @@ def activate_evidence_first_assessment(assessment_id: str, actor_user_id: str) -
         actor = _require_shadow_operator(
             db.get(User, uuid.UUID(actor_user_id)),
             tenant_id=matter.client.tenant_id,
+            allow_tenant_member=bool(assessment.configuration_snapshot.get("trusted_program_dispatch")),
         )
         existing = assessment.configuration_snapshot.get("evidence_first_orchestration")
         if existing is not None:
@@ -174,9 +184,22 @@ def activate_evidence_first_assessment(assessment_id: str, actor_user_id: str) -
         current_source = assessment.configuration_snapshot.get(SYNTHESIS_DOCUMENT_SOURCE_KEY)
         if current_source not in {None, EVIDENCE_FIRST_SYNTHESIS_SOURCE}:
             raise ValueError("Assessment is frozen to a different synthesis document source")
+        raw_model_overrides = assessment.configuration_snapshot.get(
+            "evidence_first_stage_model_overrides"
+        )
+        model_overrides = (
+            {
+                str(stage): str(model)
+                for stage, model in raw_model_overrides.items()
+                if isinstance(stage, str) and isinstance(model, str) and model.strip()
+            }
+            if isinstance(raw_model_overrides, dict)
+            else None
+        )
         stage_configuration = _frozen_stage_configuration(
             db,
             tenant_id=matter.client.tenant_id,
+            model_overrides=model_overrides,
         )
         frozen = {
             "version": EVIDENCE_ASSESSMENT_ORCHESTRATION_VERSION,
@@ -253,11 +276,15 @@ def execute_extraction(
 
 
 def _prepared_extraction(db, *, assessment_id: str, document_id: str, actor_user_id: str):
+    assessment = db.get(MatterDefinitionAssessmentRun, uuid.UUID(assessment_id))
+    if assessment is None:
+        raise ValueError("Matter Definition assessment not found")
     prepared = prepare_evidence_shadow_launch(
         db,
         actor_user_id=uuid.UUID(actor_user_id),
         assessment_id=uuid.UUID(assessment_id),
         document_ids=[uuid.UUID(document_id)],
+        require_operator_role=not bool(assessment.configuration_snapshot.get("trusted_program_dispatch")),
     )
     _validate_stage_configuration(
         prepared.assessment,
@@ -275,12 +302,21 @@ def prepare_extraction_fanout(
     actor_user_id: str,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
-        prepared = _prepared_extraction(
-            db,
-            assessment_id=assessment_id,
-            document_id=document_id,
-            actor_user_id=actor_user_id,
-        )
+        try:
+            prepared = _prepared_extraction(
+                db,
+                assessment_id=assessment_id,
+                document_id=document_id,
+                actor_user_id=actor_user_id,
+            )
+        except EvidenceInputUnavailableError as exc:
+            return {
+                "preparation_failure": {
+                    "failure_code": f"EXTRACTION_{exc.code}"[:100],
+                    "failure_message": str(exc)[:4_000],
+                    "failure_retriable": False,
+                }
+            }
         return initialize_prepared_evidence_shadow(db, prepared)
 
 
@@ -337,6 +373,7 @@ def execute_adjudication(
     assessment_id: str,
     observations_artifact_id: str,
     actor_user_id: str,
+    target_document_id: str | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         prepared = prepare_adjudication_shadow_launch(
@@ -344,6 +381,9 @@ def execute_adjudication(
             actor_user_id=uuid.UUID(actor_user_id),
             assessment_id=uuid.UUID(assessment_id),
             observations_artifact_id=uuid.UUID(observations_artifact_id),
+            target_matter_document_id=(
+                uuid.UUID(target_document_id) if target_document_id is not None else None
+            ),
         )
         _validate_stage_configuration(
             prepared.assessment,
@@ -409,8 +449,14 @@ def evidence_adjudication_workflow(
     assessment_id: str,
     observations_artifact_id: str,
     actor_user_id: str,
+    target_document_id: str | None = None,
 ) -> dict[str, Any]:
-    return execute_adjudication(assessment_id, observations_artifact_id, actor_user_id)
+    return execute_adjudication(
+        assessment_id,
+        observations_artifact_id,
+        actor_user_id,
+        target_document_id,
+    )
 
 
 @DBOS.workflow(name="matter_definition_evidence_narrative_v2")

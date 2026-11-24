@@ -409,6 +409,32 @@ class CollectionItemGroupingSnapshot(BaseModel):
     native_content_hash: Sha256 | None
 
 
+class CollectionItemIdentityMetadataRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_unique_item_ids(cls, values: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(values) != len(set(values)):
+            raise ValueError("Collection item IDs must be unique")
+        return values
+
+
+class IdentityParticipantMetadata(BaseModel):
+    email_address: str | None
+    display_name: str | None
+
+
+class CollectionItemIdentityMetadata(BaseModel):
+    item_id: uuid.UUID
+    sender: IdentityParticipantMetadata | None
+    recipients: dict[RecipientType, list[IdentityParticipantMetadata]]
+
+
 class CollectionItemRelationshipSnapshotsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -540,6 +566,7 @@ class CollectionItemSearchResponse(BaseModel):
 class CollectionItemIdentity(BaseModel):
     item_id: uuid.UUID
     source_item_id: str
+    family_id: uuid.UUID | None
 
 
 class CollectionItemIdentityPage(BaseModel):
@@ -561,6 +588,7 @@ class CollectionDateHistogramResponse(BaseModel):
 class CollectionSelectionCreate(BaseModel):
     request_id: uuid.UUID
     mode: Literal["QUERY", "EXPLICIT"] = "QUERY"
+    include_complete_families: bool = True
     q: str | None = Field(default=None, max_length=500)
     custodian_ids: list[uuid.UUID] = Field(default_factory=list, max_length=1000)
     file_extensions: list[str] = Field(default_factory=list, max_length=1000)

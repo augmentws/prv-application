@@ -12,8 +12,13 @@ from app.analysis_task_batch_set_runs import (
 from app.config import get_settings
 from app.database import SessionLocal
 from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
-from app.models import AnalysisTaskBatchSetRun
-from app.workflows.analysis_task_batch import BATCH_QUEUE, analysis_task_batch_workflow
+from app.models import AnalysisTaskBatchSetRun, WorkflowRun
+from app.workflows.analysis_task_batch import (
+    BATCH_QUEUE,
+    _batch_queue_for_engine,
+    analysis_task_batch_workflow,
+    analysis_task_batch_workflow_v1,
+)
 from app.workflows.classification_analysis_tasks import (
     CLASSIFICATION_ANALYSIS_QUEUE,
     classification_analysis_task,
@@ -51,6 +56,7 @@ def prepare(run_id: str) -> dict:
 def launch(child_id: str) -> dict:
     with SessionLocal() as db:
         child = launch_child(db, uuid.UUID(child_id))
+        workflow = db.get(WorkflowRun, child.workflow_record_id)
         db.commit()
         return {
             "child_id": str(child.child_id),
@@ -59,6 +65,11 @@ def launch(child_id: str) -> dict:
             "workflow_record_id": str(child.workflow_record_id),
             "workflow_id": child.workflow_id,
             "use_batch_api": child.use_batch_api,
+            "engine_key": (
+                str(workflow.configuration_snapshot.get("engine_key") or "jev")
+                if workflow is not None
+                else "jev"
+            ),
         }
 
 
@@ -84,7 +95,25 @@ def complete(run_id: str) -> None:
 def _enqueue_child(child: dict):
     with SetWorkflowID(child["workflow_id"]):
         if child["run_type"] == "QUESTION_ANSWERING":
-            return BATCH_QUEUE.enqueue(analysis_task_batch_workflow, child["workflow_record_id"])
+            return _batch_queue_for_engine(child["engine_key"]).enqueue(
+                analysis_task_batch_workflow,
+                child["workflow_record_id"],
+            )
+        if child["run_type"] == "CLASSIFICATION":
+            return CLASSIFICATION_ANALYSIS_QUEUE.enqueue(classification_analysis_task, child["child_run_id"])
+        queue = BATCH_RUN_QUEUE if child["use_batch_api"] else RUN_QUEUE
+        return queue.enqueue(fact_development_run, child["child_run_id"])
+
+
+def _enqueue_child_v1(child: dict):
+    """Preserve child routing for durable parent runs launched before queue isolation."""
+
+    with SetWorkflowID(child["workflow_id"]):
+        if child["run_type"] == "QUESTION_ANSWERING":
+            return BATCH_QUEUE.enqueue(
+                analysis_task_batch_workflow_v1,
+                child["workflow_record_id"],
+            )
         if child["run_type"] == "CLASSIFICATION":
             return CLASSIFICATION_ANALYSIS_QUEUE.enqueue(classification_analysis_task, child["child_run_id"])
         queue = BATCH_RUN_QUEUE if child["use_batch_api"] else RUN_QUEUE
@@ -92,6 +121,34 @@ def _enqueue_child(child: dict):
 
 
 @DBOS.workflow(name="analysis_task_batch_set_run_v1")
+def analysis_task_batch_set_run_v1(run_id: str) -> None:
+    plan = prepare(run_id)
+    child_ids = plan["child_ids"]
+    window = max(1, plan["max_concurrency"])
+    in_flight: list[tuple[str, object]] = []
+    next_index = 0
+    while next_index < len(child_ids) or in_flight:
+        while next_index < len(child_ids) and len(in_flight) < window:
+            child_id = child_ids[next_index]
+            next_index += 1
+            try:
+                child = launch(child_id)
+                in_flight.append((child["child_id"], _enqueue_child_v1(child)))
+            except Exception as exc:  # noqa: BLE001 - persist a terminal child failure and continue siblings
+                fail_launch(child_id, str(exc)[:4000])
+        if not in_flight:
+            continue
+        child_id, handle = in_flight.pop(0)
+        error_message = None
+        try:
+            handle.get_result()
+        except Exception as exc:  # noqa: BLE001 - child domain run records its own terminal failure
+            error_message = str(exc)[:4000]
+        refresh(child_id, error_message)
+    complete(run_id)
+
+
+@DBOS.workflow(name="analysis_task_batch_set_run_v2")
 def analysis_task_batch_set_run(run_id: str) -> None:
     plan = prepare(run_id)
     child_ids = plan["child_ids"]

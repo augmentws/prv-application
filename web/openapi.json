@@ -19,9 +19,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
+                  "additionalProperties": true,
                   "type": "object",
                   "title": "Response Health Health Get"
                 }
@@ -8122,6 +8120,64 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/documents/{document_id}/family": {
+      "get": {
+        "tags": [
+          "matter document imports"
+        ],
+        "summary": "Get Matter Document Family",
+        "operationId": "get_matter_document_family_v1_matters__matter_id__documents__document_id__family_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDocumentFamilyRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/documents/{document_id}/content": {
       "get": {
         "tags": [
@@ -8918,6 +8974,330 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DocumentCodingHistoryRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/coding-comparisons/options": {
+      "get": {
+        "tags": [
+          "coding comparisons"
+        ],
+        "summary": "Comparison Options",
+        "operationId": "comparison_options_v1_matters__matter_id__coding_comparisons_options_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterCodingComparisonOptionsRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/coding-comparisons": {
+      "post": {
+        "tags": [
+          "coding comparisons"
+        ],
+        "summary": "Start Comparison",
+        "operationId": "start_comparison_v1_matters__matter_id__coding_comparisons_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterCodingComparisonCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterCodingComparisonRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "coding comparisons"
+        ],
+        "summary": "List Comparisons",
+        "operationId": "list_comparisons_v1_matters__matter_id__coding_comparisons_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterCodingComparisonRead"
+                  },
+                  "title": "Response List Comparisons V1 Matters  Matter Id  Coding Comparisons Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/coding-comparisons/{comparison_id}": {
+      "get": {
+        "tags": [
+          "coding comparisons"
+        ],
+        "summary": "Get Comparison",
+        "operationId": "get_comparison_v1_matters__matter_id__coding_comparisons__comparison_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "comparison_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Comparison Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterCodingComparisonRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/coding-comparisons/{comparison_id}/documents": {
+      "get": {
+        "tags": [
+          "coding comparisons"
+        ],
+        "summary": "Comparison Documents",
+        "operationId": "comparison_documents_v1_matters__matter_id__coding_comparisons__comparison_id__documents_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "comparison_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Comparison Id"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "agreement_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(EXACT|PARTIAL|DISAGREEMENT|INCOMPLETE)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agreement Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterCodingComparisonDocumentPage"
                 }
               }
             }
@@ -11496,6 +11876,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MatterSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/composite-preview": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Preview Composite Review Batch",
+        "operationId": "preview_composite_review_batch_v1_matters__matter_id__review_batches_composite_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchCompositePreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchCompositePreviewRead"
                 }
               }
             }
@@ -14951,6 +15389,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/privilege-family-context": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Prepare Program Privilege Family Context",
+        "operationId": "prepare_program_privilege_family_context_v1_matters__matter_id__review_programs__program_id__privilege_family_context_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivilegeFamilyContextPrepare"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-programs/{program_id}/runs": {
       "get": {
         "tags": [
@@ -15675,6 +16181,94 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/classifier-improvement-preview": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Preview Program Classifier Improvement",
+        "operationId": "preview_program_classifier_improvement_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__classifier_improvement_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramClassifierImprovementPreview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramClassifierImprovementPreviewRead"
                 }
               }
             }
@@ -17141,6 +17735,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchProjectionRetryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/search-operations/{operation_id}/retry": {
+      "post": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Retry Search Operation",
+        "operationId": "retry_search_operation_v1_matters__matter_id__search_operations__operation_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Operation Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProjectionOperationRead"
                 }
               }
             }
@@ -21142,6 +21794,776 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/entity-relationships/types": {
+      "get": {
+        "tags": [
+          "matter entity relationships"
+        ],
+        "summary": "List Relationship Types",
+        "operationId": "list_relationship_types_v1_matters__matter_id__entity_relationships_types_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterEntityRelationshipDefinitionRead"
+                  },
+                  "title": "Response List Relationship Types V1 Matters  Matter Id  Entity Relationships Types Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entity-relationships": {
+      "get": {
+        "tags": [
+          "matter entity relationships"
+        ],
+        "summary": "List Relationships",
+        "operationId": "list_relationships_v1_matters__matter_id__entity_relationships_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterEntityRelationshipRead"
+                  },
+                  "title": "Response List Relationships V1 Matters  Matter Id  Entity Relationships Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter entity relationships"
+        ],
+        "summary": "Create Relationship",
+        "operationId": "create_relationship_v1_matters__matter_id__entity_relationships_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityRelationshipCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRelationshipRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entity-relationships/{relationship_id}/confirm": {
+      "post": {
+        "tags": [
+          "matter entity relationships"
+        ],
+        "summary": "Confirm Relationship",
+        "operationId": "confirm_relationship_v1_matters__matter_id__entity_relationships__relationship_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "relationship_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Relationship Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityRelationshipAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRelationshipRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entity-relationships/{relationship_id}/reject": {
+      "post": {
+        "tags": [
+          "matter entity relationships"
+        ],
+        "summary": "Reject Relationship",
+        "operationId": "reject_relationship_v1_matters__matter_id__entity_relationships__relationship_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "relationship_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Relationship Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityRelationshipAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRelationshipRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/identity-analysis-jobs": {
+      "post": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "Start Identity Analysis",
+        "operationId": "start_identity_analysis_v1_matters__matter_id__identity_analysis_jobs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterIdentityAnalysisRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "List Identity Analyses",
+        "operationId": "list_identity_analyses_v1_matters__matter_id__identity_analysis_jobs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterIdentityAnalysisRead"
+                  },
+                  "title": "Response List Identity Analyses V1 Matters  Matter Id  Identity Analysis Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/identity-analysis-jobs/{analysis_id}": {
+      "get": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "Get Identity Analysis",
+        "operationId": "get_identity_analysis_v1_matters__matter_id__identity_analysis_jobs__analysis_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "analysis_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Analysis Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterIdentityAnalysisRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/identity-analysis-jobs/{analysis_id}/domain-recommendation-runs": {
+      "post": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "Start Identity Domain Recommendations",
+        "operationId": "start_identity_domain_recommendations_v1_matters__matter_id__identity_analysis_jobs__analysis_id__domain_recommendation_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "analysis_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Analysis Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterIdentityRecommendationRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "List Identity Domain Recommendations",
+        "operationId": "list_identity_domain_recommendations_v1_matters__matter_id__identity_analysis_jobs__analysis_id__domain_recommendation_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "analysis_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Analysis Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterIdentityRecommendationRunRead"
+                  },
+                  "title": "Response List Identity Domain Recommendations V1 Matters  Matter Id  Identity Analysis Jobs  Analysis Id  Domain Recommendation Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/identity-analysis-jobs/{analysis_id}/domain-recommendation-runs/{run_id}/recommendations": {
+      "get": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "Get Identity Domain Recommendations",
+        "operationId": "get_identity_domain_recommendations_v1_matters__matter_id__identity_analysis_jobs__analysis_id__domain_recommendation_runs__run_id__recommendations_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "analysis_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Analysis Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterIdentityDomainRecommendationPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/identity-analysis-jobs/{analysis_id}/domain-recommendation-runs/{run_id}/decisions": {
+      "post": {
+        "tags": [
+          "matter identity analysis"
+        ],
+        "summary": "Decide Identity Domain Recommendation",
+        "operationId": "decide_identity_domain_recommendation_v1_matters__matter_id__identity_analysis_jobs__analysis_id__domain_recommendation_runs__run_id__decisions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "analysis_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Analysis Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterIdentityDomainDecisionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterIdentityDomainDecisionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/fact-exports": {
       "post": {
         "tags": [
@@ -23561,6 +24983,57 @@
                   },
                   "type": "array",
                   "title": "Response Get Collection Item Grouping Snapshots V1 Collection Items Grouping Snapshots Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/collection-items/identity-metadata": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Collection Item Identity Metadata",
+        "description": "Batch-read structured participants without returning subject or content.",
+        "operationId": "get_collection_item_identity_metadata_v1_collection_items_identity_metadata_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemIdentityMetadataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionItemIdentityMetadata"
+                  },
+                  "type": "array",
+                  "title": "Response Get Collection Item Identity Metadata V1 Collection Items Identity Metadata Post"
                 }
               }
             }
@@ -29839,7 +31312,15 @@
           "JOB_ITEM_OUTCOME_FRAGMENT",
           "JOB_ITEM_OUTCOMES",
           "FACT_EXPORT",
-          "REVIEW_PROGRAM_COMPLETION_REPORT"
+          "REVIEW_PROGRAM_COMPLETION_REPORT",
+          "CODING_COMPARISON_POPULATION",
+          "CODING_COMPARISON_RESULT",
+          "IDENTITY_ANALYSIS_RESULT",
+          "IDENTITY_DOMAIN_RECOMMENDATIONS",
+          "PRIVILEGE_IDENTITY_CONTEXT",
+          "PRIVILEGE_REVIEW_POPULATION",
+          "PRIVILEGE_FAMILY_CONTEXT",
+          "PRIVILEGE_EVIDENCE_PACKETS"
         ],
         "title": "ArtifactType"
       },
@@ -33961,6 +35442,16 @@
               }
             ],
             "title": "Hierarchy Level"
+          },
+          "label_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LabelSourceSpecification"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -35164,14 +36655,102 @@
           "source_item_id": {
             "type": "string",
             "title": "Source Item Id"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
           }
         },
         "type": "object",
         "required": [
           "item_id",
-          "source_item_id"
+          "source_item_id",
+          "family_id"
         ],
         "title": "CollectionItemIdentity"
+      },
+      "CollectionItemIdentityMetadata": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IdentityParticipantMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recipients": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IdentityParticipantMetadata"
+              },
+              "type": "array"
+            },
+            "propertyNames": {
+              "enum": [
+                "TO",
+                "CC",
+                "BCC"
+              ]
+            },
+            "type": "object",
+            "title": "Recipients"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "sender",
+          "recipients"
+        ],
+        "title": "CollectionItemIdentityMetadata"
+      },
+      "CollectionItemIdentityMetadataRequest": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Item Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "item_ids"
+        ],
+        "title": "CollectionItemIdentityMetadataRequest"
       },
       "CollectionItemIdentityPage": {
         "properties": {
@@ -35932,6 +37511,11 @@
             ],
             "title": "Mode",
             "default": "QUERY"
+          },
+          "include_complete_families": {
+            "type": "boolean",
+            "title": "Include Complete Families",
+            "default": true
           },
           "q": {
             "anyOf": [
@@ -39702,6 +41286,38 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "IdentityParticipantMetadata": {
+        "properties": {
+          "email_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Address"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email_address",
+          "display_name"
+        ],
+        "title": "IdentityParticipantMetadata"
+      },
       "JobExecutionHistoryRead": {
         "properties": {
           "job_type": {
@@ -42078,6 +43694,755 @@
         ],
         "title": "MatterBulkTagPreviewResponse"
       },
+      "MatterCodingComparisonBatchOptionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Document Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "document_count"
+        ],
+        "title": "MatterCodingComparisonBatchOptionRead"
+      },
+      "MatterCodingComparisonCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "review_batch_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Review Batch Ids"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonSource"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "minItems": 2,
+            "title": "Sources"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "review_batch_ids",
+          "sources",
+          "idempotency_key"
+        ],
+        "title": "MatterCodingComparisonCreate"
+      },
+      "MatterCodingComparisonDocumentPage": {
+        "properties": {
+          "comparison_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Comparison Id"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Limit"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonDocumentRead"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comparison_id",
+          "total",
+          "offset",
+          "limit",
+          "items"
+        ],
+        "title": "MatterCodingComparisonDocumentPage"
+      },
+      "MatterCodingComparisonDocumentRead": {
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ordinal"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "collection_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Item Id"
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Batch Ids"
+          },
+          "agreement_status": {
+            "type": "string",
+            "enum": [
+              "EXACT",
+              "PARTIAL",
+              "DISAGREEMENT",
+              "INCOMPLETE"
+            ],
+            "title": "Agreement Status"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonDocumentSourceRead"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal",
+          "matter_document_id",
+          "collection_item_id",
+          "batch_ids",
+          "agreement_status",
+          "sources"
+        ],
+        "title": "MatterCodingComparisonDocumentRead"
+      },
+      "MatterCodingComparisonDocumentSourceRead": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "EVALUATED",
+              "MISSING",
+              "FAILED",
+              "SKIPPED",
+              "INCOMPLETE",
+              "CONFLICTED",
+              "UNMAPPED"
+            ],
+            "title": "State"
+          },
+          "value_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Value Keys"
+          },
+          "raw_value_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Raw Value Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id",
+          "state",
+          "value_keys",
+          "raw_value_keys"
+        ],
+        "title": "MatterCodingComparisonDocumentSourceRead"
+      },
+      "MatterCodingComparisonFieldOptionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "TEXT",
+              "LONG_TEXT",
+              "INTEGER",
+              "DECIMAL",
+              "BOOLEAN",
+              "DATE",
+              "DATETIME",
+              "ENUM",
+              "JSON"
+            ],
+            "title": "Type"
+          },
+          "cardinality": {
+            "type": "string",
+            "enum": [
+              "SINGLE",
+              "MULTIPLE"
+            ],
+            "title": "Cardinality"
+          },
+          "allowed_values": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Allowed Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "key",
+          "display_name",
+          "type",
+          "cardinality",
+          "allowed_values"
+        ],
+        "title": "MatterCodingComparisonFieldOptionRead"
+      },
+      "MatterCodingComparisonOptionsRead": {
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonBatchOptionRead"
+            },
+            "type": "array",
+            "title": "Batches"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonFieldOptionRead"
+            },
+            "type": "array",
+            "title": "Fields"
+          },
+          "qa_runs": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonRunOptionRead"
+            },
+            "type": "array",
+            "title": "Qa Runs"
+          },
+          "reviewer_codings": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonReviewerCodingOptionRead"
+            },
+            "type": "array",
+            "title": "Reviewer Codings"
+          },
+          "classifier_scoring_runs": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonScoringRunOptionRead"
+            },
+            "type": "array",
+            "title": "Classifier Scoring Runs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batches",
+          "fields",
+          "qa_runs",
+          "reviewer_codings",
+          "classifier_scoring_runs"
+        ],
+        "title": "MatterCodingComparisonOptionsRead"
+      },
+      "MatterCodingComparisonRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "configuration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration"
+          },
+          "population_document_count": {
+            "type": "integer",
+            "title": "Population Document Count"
+          },
+          "compared_document_count": {
+            "type": "integer",
+            "title": "Compared Document Count"
+          },
+          "population_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Artifact Id"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Artifact Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "name",
+          "status",
+          "current_stage",
+          "configuration",
+          "population_document_count",
+          "compared_document_count",
+          "population_artifact_id",
+          "result_artifact_id",
+          "summary",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterCodingComparisonRead"
+      },
+      "MatterCodingComparisonReviewerCodingOptionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "reviewer_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Reviewer User Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
+          "metadata_definition_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Metadata Definition Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "reviewer_user_id",
+          "label",
+          "detail",
+          "revision",
+          "metadata_definition_ids"
+        ],
+        "title": "MatterCodingComparisonReviewerCodingOptionRead"
+      },
+      "MatterCodingComparisonReviewerSnapshot": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "revision"
+        ],
+        "title": "MatterCodingComparisonReviewerSnapshot"
+      },
+      "MatterCodingComparisonRunOptionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "run_type": {
+            "type": "string",
+            "enum": [
+              "AGENT",
+              "WORKFLOW",
+              "CLASSIFIER"
+            ],
+            "title": "Run Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "metadata_definition_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Metadata Definition Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "label",
+          "run_type",
+          "status",
+          "metadata_definition_ids"
+        ],
+        "title": "MatterCodingComparisonRunOptionRead"
+      },
+      "MatterCodingComparisonScoringRunOptionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "population_document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Population Document Count"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "metadata_definition_id",
+          "population_document_count",
+          "completed_at"
+        ],
+        "title": "MatterCodingComparisonScoringRunOptionRead"
+      },
+      "MatterCodingComparisonSource": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Source Id"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "QA_RUN_GROUP",
+              "REVIEWER_CODING_GROUP",
+              "MATTER_FIELD",
+              "CLASSIFIER_SCORING_RUN"
+            ],
+            "title": "Source Type"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "run_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Run Ids"
+          },
+          "reviewer_codings": {
+            "items": {
+              "$ref": "#/components/schemas/MatterCodingComparisonReviewerSnapshot"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Reviewer Codings"
+          },
+          "scoring_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scoring Run Id"
+          },
+          "value_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Value Mapping"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_type",
+          "label",
+          "metadata_definition_id"
+        ],
+        "title": "MatterCodingComparisonSource"
+      },
       "MatterCreate": {
         "properties": {
           "name": {
@@ -43918,6 +46283,127 @@
         "title": "MatterDocumentFactRead",
         "description": "A live fact that cites one document, with only the quotes taken from that document."
       },
+      "MatterDocumentFamilyMemberRead": {
+        "properties": {
+          "matter_document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Document Id"
+          },
+          "collection_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Item Id"
+          },
+          "identifier": {
+            "type": "string",
+            "title": "Identifier"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "record_type": {
+            "type": "string",
+            "title": "Record Type"
+          },
+          "relationship": {
+            "type": "string",
+            "enum": [
+              "PARENT",
+              "ATTACHMENT"
+            ],
+            "title": "Relationship"
+          },
+          "is_current": {
+            "type": "boolean",
+            "title": "Is Current"
+          },
+          "available_in_matter": {
+            "type": "boolean",
+            "title": "Available In Matter"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "collection_item_id",
+          "identifier",
+          "display_name",
+          "record_type",
+          "relationship",
+          "is_current",
+          "available_in_matter"
+        ],
+        "title": "MatterDocumentFamilyMemberRead"
+      },
+      "MatterDocumentFamilyRead": {
+        "properties": {
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "current_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Current Document Id"
+          },
+          "current_role": {
+            "type": "string",
+            "enum": [
+              "PARENT",
+              "ATTACHMENT",
+              "STANDALONE"
+            ],
+            "title": "Current Role"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterDocumentFamilyMemberRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/MatterDocumentFamilyMemberRead"
+            },
+            "type": "array",
+            "title": "Children"
+          },
+          "unavailable_member_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unavailable Member Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "family_id",
+          "current_document_id",
+          "current_role"
+        ],
+        "title": "MatterDocumentFamilyRead"
+      },
       "MatterDocumentImportCreate": {
         "properties": {
           "source_collection_id": {
@@ -44822,6 +47308,28 @@
             ],
             "title": "Entity Type"
           },
+          "organization_category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "LAW_FIRM",
+                  "CORPORATION",
+                  "GOVERNMENT",
+                  "ACCOUNTING_FIRM",
+                  "CONSULTING_FIRM",
+                  "INSURER",
+                  "EMAIL_PROVIDER",
+                  "OTHER",
+                  "UNKNOWN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Category"
+          },
           "display_name": {
             "anyOf": [
               {
@@ -44912,6 +47420,31 @@
         ],
         "title": "MatterEntityCreate"
       },
+      "MatterEntityDomainRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "domain",
+          "created_at"
+        ],
+        "title": "MatterEntityDomainRead"
+      },
       "MatterEntityMerge": {
         "properties": {
           "lock_version": {
@@ -44973,6 +47506,28 @@
               "ORGANIZATION"
             ],
             "title": "Entity Type"
+          },
+          "organization_category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "LAW_FIRM",
+                  "CORPORATION",
+                  "GOVERNMENT",
+                  "ACCOUNTING_FIRM",
+                  "CONSULTING_FIRM",
+                  "INSURER",
+                  "EMAIL_PROVIDER",
+                  "OTHER",
+                  "UNKNOWN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Category"
           },
           "display_name": {
             "anyOf": [
@@ -45096,6 +47651,13 @@
             "type": "array",
             "title": "Variants"
           },
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/MatterEntityDomainRead"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
           "fact_count": {
             "type": "integer",
             "title": "Fact Count",
@@ -45107,6 +47669,7 @@
           "id",
           "matter_id",
           "entity_type",
+          "organization_category",
           "display_name",
           "email",
           "title",
@@ -45121,6 +47684,433 @@
           "updated_at"
         ],
         "title": "MatterEntityRead"
+      },
+      "MatterEntityRelationshipAction": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterEntityRelationshipAction"
+      },
+      "MatterEntityRelationshipCreate": {
+        "properties": {
+          "source_entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Entity Id"
+          },
+          "target_entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Entity Id"
+          },
+          "relationship_type": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Relationship Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROPOSED",
+              "CONFIRMED"
+            ],
+            "title": "Status",
+            "default": "CONFIRMED"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_entity_id",
+          "target_entity_id",
+          "relationship_type"
+        ],
+        "title": "MatterEntityRelationshipCreate"
+      },
+      "MatterEntityRelationshipDefinitionRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "forward_label": {
+            "type": "string",
+            "title": "Forward Label"
+          },
+          "inverse_label": {
+            "type": "string",
+            "title": "Inverse Label"
+          },
+          "source_entity_types": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "PERSON",
+                "ORGANIZATION"
+              ]
+            },
+            "type": "array",
+            "title": "Source Entity Types"
+          },
+          "source_organization_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "LAW_FIRM",
+                    "CORPORATION",
+                    "GOVERNMENT",
+                    "ACCOUNTING_FIRM",
+                    "CONSULTING_FIRM",
+                    "INSURER",
+                    "EMAIL_PROVIDER",
+                    "OTHER",
+                    "UNKNOWN"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Organization Categories"
+          },
+          "target_entity_types": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "PERSON",
+                "ORGANIZATION"
+              ]
+            },
+            "type": "array",
+            "title": "Target Entity Types"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "forward_label",
+          "inverse_label",
+          "source_entity_types",
+          "source_organization_categories",
+          "target_entity_types"
+        ],
+        "title": "MatterEntityRelationshipDefinitionRead"
+      },
+      "MatterEntityRelationshipPartyRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "PERSON",
+              "ORGANIZATION"
+            ],
+            "title": "Entity Type"
+          },
+          "organization_category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "LAW_FIRM",
+                  "CORPORATION",
+                  "GOVERNMENT",
+                  "ACCOUNTING_FIRM",
+                  "CONSULTING_FIRM",
+                  "INSURER",
+                  "EMAIL_PROVIDER",
+                  "OTHER",
+                  "UNKNOWN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Category"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROPOSED",
+              "CONFIRMED",
+              "REJECTED"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "entity_type",
+          "organization_category",
+          "display_name",
+          "email",
+          "status"
+        ],
+        "title": "MatterEntityRelationshipPartyRead"
+      },
+      "MatterEntityRelationshipRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "relationship_type": {
+            "type": "string",
+            "title": "Relationship Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROPOSED",
+              "CONFIRMED",
+              "REJECTED"
+            ],
+            "title": "Status"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "created_by_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Workflow Run Id"
+          },
+          "decided_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By User Id"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "lock_version": {
+            "type": "integer",
+            "title": "Lock Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MatterEntityRelationshipPartyRead"
+          },
+          "target": {
+            "$ref": "#/components/schemas/MatterEntityRelationshipPartyRead"
+          },
+          "forward_label": {
+            "type": "string",
+            "title": "Forward Label"
+          },
+          "inverse_label": {
+            "type": "string",
+            "title": "Inverse Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "relationship_type",
+          "status",
+          "confidence",
+          "rationale",
+          "effective_from",
+          "effective_to",
+          "created_by_user_id",
+          "created_by_workflow_run_id",
+          "decided_by_user_id",
+          "decided_at",
+          "lock_version",
+          "created_at",
+          "updated_at",
+          "source",
+          "target",
+          "forward_label",
+          "inverse_label"
+        ],
+        "title": "MatterEntityRelationshipRead"
       },
       "MatterEntityUpdate": {
         "properties": {
@@ -45141,6 +48131,28 @@
               }
             ],
             "title": "Display Name"
+          },
+          "organization_category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "LAW_FIRM",
+                  "CORPORATION",
+                  "GOVERNMENT",
+                  "ACCOUNTING_FIRM",
+                  "CONSULTING_FIRM",
+                  "INSURER",
+                  "EMAIL_PROVIDER",
+                  "OTHER",
+                  "UNKNOWN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Category"
           },
           "title": {
             "anyOf": [
@@ -47120,6 +50132,648 @@
         ],
         "title": "MatterFactUpdate",
         "description": "Only fields present in the request are changed; each content change appends a revision."
+      },
+      "MatterIdentityAnalysisRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "total_document_count": {
+            "type": "integer",
+            "title": "Total Document Count"
+          },
+          "processed_document_count": {
+            "type": "integer",
+            "title": "Processed Document Count"
+          },
+          "documents_with_participants_count": {
+            "type": "integer",
+            "title": "Documents With Participants Count"
+          },
+          "identity_count": {
+            "type": "integer",
+            "title": "Identity Count"
+          },
+          "domain_count": {
+            "type": "integer",
+            "title": "Domain Count"
+          },
+          "invalid_participant_count": {
+            "type": "integer",
+            "title": "Invalid Participant Count"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Artifact Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "status",
+          "current_stage",
+          "total_document_count",
+          "processed_document_count",
+          "documents_with_participants_count",
+          "identity_count",
+          "domain_count",
+          "invalid_participant_count",
+          "result_artifact_id",
+          "summary",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterIdentityAnalysisRead"
+      },
+      "MatterIdentityDomainDecisionCreate": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "maxLength": 253,
+            "minLength": 3,
+            "title": "Domain"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "REJECTED"
+            ],
+            "title": "Decision"
+          },
+          "organization_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Name"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "domain",
+          "decision"
+        ],
+        "title": "MatterIdentityDomainDecisionCreate"
+      },
+      "MatterIdentityDomainDecisionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "recommendation_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Recommendation Run Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "REJECTED"
+            ],
+            "title": "Decision"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "organization_name": {
+            "type": "string",
+            "title": "Organization Name"
+          },
+          "organization_category": {
+            "type": "string",
+            "enum": [
+              "LAW_FIRM",
+              "CORPORATION",
+              "GOVERNMENT",
+              "ACCOUNTING_FIRM",
+              "CONSULTING_FIRM",
+              "INSURER",
+              "EMAIL_PROVIDER",
+              "OTHER"
+            ],
+            "title": "Organization Category"
+          },
+          "decided_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Decided By User Id"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Decided At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "recommendation_run_id",
+          "matter_id",
+          "domain",
+          "decision",
+          "entity_id",
+          "organization_name",
+          "organization_category",
+          "decided_by_user_id",
+          "decided_at"
+        ],
+        "title": "MatterIdentityDomainDecisionRead"
+      },
+      "MatterIdentityDomainRecommendationPage": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "reviewed_domain_count": {
+            "type": "integer",
+            "title": "Reviewed Domain Count"
+          },
+          "recommendations": {
+            "items": {
+              "$ref": "#/components/schemas/MatterIdentityDomainRecommendationRead"
+            },
+            "type": "array",
+            "title": "Recommendations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "reviewed_domain_count",
+          "recommendations"
+        ],
+        "title": "MatterIdentityDomainRecommendationPage"
+      },
+      "MatterIdentityDomainRecommendationRead": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "canonical_domain": {
+            "type": "string",
+            "title": "Canonical Domain"
+          },
+          "organization_name": {
+            "type": "string",
+            "title": "Organization Name"
+          },
+          "organization_category": {
+            "type": "string",
+            "enum": [
+              "LAW_FIRM",
+              "CORPORATION",
+              "GOVERNMENT",
+              "ACCOUNTING_FIRM",
+              "CONSULTING_FIRM",
+              "INSURER",
+              "EMAIL_PROVIDER",
+              "OTHER"
+            ],
+            "title": "Organization Category"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale"
+          },
+          "evidence_signals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Signals"
+          },
+          "alternative_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Alternative Categories"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ACCEPTED",
+                  "REJECTED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "proposed_entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Entity Id"
+          },
+          "publication_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PROPOSED",
+                  "ALREADY_PROPOSED",
+                  "ALREADY_CONFIRMED",
+                  "SKIPPED_REJECTED_MAPPING"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "domain",
+          "canonical_domain",
+          "organization_name",
+          "organization_category",
+          "confidence",
+          "rationale",
+          "evidence_signals",
+          "alternative_categories"
+        ],
+        "title": "MatterIdentityDomainRecommendationRead"
+      },
+      "MatterIdentityRecommendationRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "identity_analysis_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Identity Analysis Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "domain_count": {
+            "type": "integer",
+            "title": "Domain Count"
+          },
+          "processed_domain_count": {
+            "type": "integer",
+            "title": "Processed Domain Count"
+          },
+          "recommendation_count": {
+            "type": "integer",
+            "title": "Recommendation Count"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Artifact Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "identity_analysis_id",
+          "status",
+          "current_stage",
+          "domain_count",
+          "processed_domain_count",
+          "recommendation_count",
+          "result_artifact_id",
+          "summary",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterIdentityRecommendationRunRead"
       },
       "MatterOverviewCounts": {
         "properties": {
@@ -50818,6 +54472,69 @@
         "type": "object",
         "title": "PredictionResolutionPolicy"
       },
+      "PrivilegeFamilyContextPrepare": {
+        "properties": {
+          "expected_program_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Expected Program Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_program_version_id"
+        ],
+        "title": "PrivilegeFamilyContextPrepare"
+      },
+      "PrivilegeReviewFoundationCreate": {
+        "properties": {
+          "population_type": {
+            "type": "string",
+            "enum": [
+              "REVIEW_BATCHES",
+              "ALL_MATTER"
+            ],
+            "title": "Population Type",
+            "default": "REVIEW_BATCHES"
+          },
+          "review_batch_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Review Batch Ids"
+          },
+          "target_metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Metadata Definition Id"
+          },
+          "review_policy": {
+            "type": "string",
+            "enum": [
+              "HUMAN_ONLY",
+              "LLM_THEN_HUMAN",
+              "HYBRID"
+            ],
+            "title": "Review Policy",
+            "default": "LLM_THEN_HUMAN"
+          },
+          "keep_families_together": {
+            "type": "boolean",
+            "title": "Keep Families Together",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target_metadata_definition_id"
+        ],
+        "title": "PrivilegeReviewFoundationCreate"
+      },
       "ProviderUsageJobBreakdownRead": {
         "properties": {
           "record_count": {
@@ -51131,6 +54848,18 @@
               }
             ],
             "title": "Matter Analysis Task Version Id"
+          },
+          "execution_profile_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Profile Id"
           }
         },
         "additionalProperties": false,
@@ -52372,6 +56101,122 @@
         ],
         "title": "ReviewBatchComparisonValueCountRead"
       },
+      "ReviewBatchCompositePreviewRead": {
+        "properties": {
+          "fixed_match_count": {
+            "type": "integer",
+            "title": "Fixed Match Count"
+          },
+          "sample_match_count": {
+            "type": "integer",
+            "title": "Sample Match Count"
+          },
+          "overlap_count": {
+            "type": "integer",
+            "title": "Overlap Count"
+          },
+          "eligible_sample_count": {
+            "type": "integer",
+            "title": "Eligible Sample Count"
+          },
+          "requested_sample_count": {
+            "type": "integer",
+            "title": "Requested Sample Count"
+          },
+          "selected_sample_count": {
+            "type": "integer",
+            "title": "Selected Sample Count"
+          },
+          "family_added_count": {
+            "type": "integer",
+            "title": "Family Added Count"
+          },
+          "final_document_count": {
+            "type": "integer",
+            "title": "Final Document Count"
+          },
+          "random_seed": {
+            "type": "string",
+            "title": "Random Seed"
+          },
+          "search_index_generation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Search Index Generation Id"
+          },
+          "preview_hash": {
+            "type": "string",
+            "title": "Preview Hash"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fixed_match_count",
+          "sample_match_count",
+          "overlap_count",
+          "eligible_sample_count",
+          "requested_sample_count",
+          "selected_sample_count",
+          "family_added_count",
+          "final_document_count",
+          "random_seed",
+          "search_index_generation_id",
+          "preview_hash"
+        ],
+        "title": "ReviewBatchCompositePreviewRead"
+      },
+      "ReviewBatchCompositePreviewRequest": {
+        "properties": {
+          "fixed_saved_search_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Fixed Saved Search Id"
+          },
+          "sample_saved_search_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Sample Saved Search Id"
+          },
+          "sample_size": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Sample Size"
+          },
+          "random_seed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Random Seed"
+          },
+          "include_complete_families": {
+            "type": "boolean",
+            "title": "Include Complete Families",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "fixed_saved_search_id",
+          "sample_saved_search_id",
+          "sample_size"
+        ],
+        "title": "ReviewBatchCompositePreviewRequest"
+      },
       "ReviewBatchCreate": {
         "properties": {
           "name": {
@@ -52397,9 +56242,11 @@
             "enum": [
               "ALL_MATTER",
               "SEARCH_QUERY",
+              "SAVED_SEARCH",
               "RANDOM_MATTER",
               "RANDOM_BATCH",
               "RANDOM_SAVED_SEARCH",
+              "COMPOSITE_SAVED_SEARCH",
               "RANDOM_ASSESSMENT"
             ],
             "title": "Selection Type"
@@ -52438,6 +56285,30 @@
             ],
             "title": "Saved Search Id"
           },
+          "fixed_saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Saved Search Id"
+          },
+          "sample_saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Saved Search Id"
+          },
           "assessment_run_id": {
             "anyOf": [
               {
@@ -52475,6 +56346,31 @@
               }
             ],
             "title": "Random Seed"
+          },
+          "expected_search_index_generation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Search Index Generation Id"
+          },
+          "preview_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Hash"
           },
           "include_complete_families": {
             "type": "boolean",
@@ -53385,9 +57281,11 @@
             "enum": [
               "ALL_MATTER",
               "SEARCH_QUERY",
+              "SAVED_SEARCH",
               "RANDOM_MATTER",
               "RANDOM_BATCH",
               "RANDOM_SAVED_SEARCH",
+              "COMPOSITE_SAVED_SEARCH",
               "RANDOM_ASSESSMENT",
               "DEFINITION_ASSESSMENT",
               "CLASSIFICATION_PREDICTIONS",
@@ -55535,43 +59433,7 @@
         ],
         "title": "ReviewProgramActionResolve"
       },
-      "ReviewProgramClassifierImprovementQuery": {
-        "properties": {
-          "metadata_definition_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Metadata Definition Id"
-          },
-          "class_key": {
-            "type": "string",
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Class Key"
-          },
-          "query": {
-            "type": "string",
-            "maxLength": 2000,
-            "minLength": 1,
-            "title": "Query"
-          },
-          "quota": {
-            "type": "integer",
-            "maximum": 25000.0,
-            "minimum": 1.0,
-            "title": "Quota",
-            "default": 50
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "metadata_definition_id",
-          "class_key",
-          "query"
-        ],
-        "title": "ReviewProgramClassifierImprovementQuery"
-      },
-      "ReviewProgramClassifierImprovementSetup": {
+      "ReviewProgramClassifierImprovementPreview": {
         "properties": {
           "preview_hash": {
             "type": "string",
@@ -55587,13 +59449,6 @@
             "maxItems": 100,
             "minItems": 1,
             "title": "Queries"
-          },
-          "control_sample_size": {
-            "type": "integer",
-            "maximum": 25000.0,
-            "minimum": 0.0,
-            "title": "Control Sample Size",
-            "default": 25
           },
           "target_batch_size": {
             "type": "integer",
@@ -55612,6 +59467,176 @@
         "type": "object",
         "required": [
           "preview_hash",
+          "queries"
+        ],
+        "title": "ReviewProgramClassifierImprovementPreview"
+      },
+      "ReviewProgramClassifierImprovementPreviewRead": {
+        "properties": {
+          "retrieval_preview_hash": {
+            "type": "string",
+            "title": "Retrieval Preview Hash"
+          },
+          "requested_document_count": {
+            "type": "integer",
+            "title": "Requested Document Count"
+          },
+          "selected_document_count": {
+            "type": "integer",
+            "title": "Selected Document Count"
+          },
+          "estimated_batch_count": {
+            "type": "integer",
+            "title": "Estimated Batch Count"
+          },
+          "excluded_prior_program_document_count": {
+            "type": "integer",
+            "title": "Excluded Prior Program Document Count"
+          },
+          "excluded_completed_human_review_document_count": {
+            "type": "integer",
+            "title": "Excluded Completed Human Review Document Count"
+          },
+          "overlap_removed_count": {
+            "type": "integer",
+            "title": "Overlap Removed Count"
+          },
+          "query_yields": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Query Yields"
+          },
+          "similarity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Similarity"
+          },
+          "expansion_recommended": {
+            "type": "boolean",
+            "title": "Expansion Recommended"
+          }
+        },
+        "type": "object",
+        "required": [
+          "retrieval_preview_hash",
+          "requested_document_count",
+          "selected_document_count",
+          "estimated_batch_count",
+          "excluded_prior_program_document_count",
+          "excluded_completed_human_review_document_count",
+          "overlap_removed_count",
+          "query_yields",
+          "similarity",
+          "expansion_recommended"
+        ],
+        "title": "ReviewProgramClassifierImprovementPreviewRead"
+      },
+      "ReviewProgramClassifierImprovementQuery": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "class_key": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Class Key"
+          },
+          "criterion_key": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Criterion Key"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "quota": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 1.0,
+            "title": "Quota",
+            "default": 50
+          },
+          "expanded_query": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expanded Query"
+          },
+          "expanded_quota": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 1.0,
+            "title": "Expanded Quota",
+            "default": 50
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "class_key",
+          "criterion_key",
+          "query"
+        ],
+        "title": "ReviewProgramClassifierImprovementQuery"
+      },
+      "ReviewProgramClassifierImprovementSetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "retrieval_preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Retrieval Preview Hash"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramClassifierImprovementQuery"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Queries"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size",
+            "default": 100
+          },
+          "keep_families_together": {
+            "type": "boolean",
+            "title": "Keep Families Together",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash",
+          "retrieval_preview_hash",
           "queries"
         ],
         "title": "ReviewProgramClassifierImprovementSetup"
@@ -55772,6 +59797,16 @@
               }
             ],
             "title": "Matter Definition Id"
+          },
+          "privilege_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrivilegeReviewFoundationCreate"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,

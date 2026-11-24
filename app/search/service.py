@@ -16,6 +16,7 @@ from app.artifact_gateway import (
 )
 from app.config import Settings, get_settings
 from app.database import SessionLocal
+from app.database_work import worker_database_slot
 from app.document_metadata import current_metadata_values, event_value
 from app.email_domains import extract_email_domains
 from app.embeddings.configuration import canonical_hash, processing_configuration
@@ -46,7 +47,7 @@ from app.models import (
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
-from app.search.client import OpenSearchBulkError, OpenSearchClient
+from app.search.client import OpenSearchBulkError, OpenSearchClient, is_retryable_opensearch_error
 from app.search.coding_provenance import coded_by_tokens, coded_by_tokens_for_documents
 from app.search.mappings import compile_document_index, schema_hash
 from app.search.schema import SearchReindexRequired, plan_schema_change
@@ -242,16 +243,31 @@ def build_document_projection(
     import_job = db.get(MatterDocumentImportJob, document.added_by_import_job_id)
     if import_job is None:
         raise ValueError("Matter document import job not found")
+    tenant_id = matter.client.tenant_id
+    client_id = matter.client_id
+    actor_user_id = import_job.created_by_user_id
+    # Snapshot resolution is an Artifact API/S3 operation in split mode. Make
+    # the relational lookup durable and release its connection first.
+    db.commit()
     snapshot = get_search_item_snapshot(
         collection_item_id=document.collection_item_id,
-        actor_user_id=import_job.created_by_user_id,
-        tenant_id=matter.client.tenant_id,
-        client_id=matter.client_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
     )
     custodian_names = list(
-        db.scalars(select(Custodian.display_name).where(Custodian.id.in_(snapshot.custodian_ids)).order_by(Custodian.display_name))
+        db.scalars(
+            select(Custodian.display_name)
+            .where(Custodian.id.in_(snapshot.custodian_ids))
+            .order_by(Custodian.display_name)
+        )
     )
     recipients = snapshot.email_recipients
+    resolved_fact_state = (
+        document_fact_states(db, [document.id])[document.id] if fact_state is _UNRESOLVED else fact_state
+    )
+    metadata_values = current_metadata_values(db, document.id, definitions)
+    resolved_coded_by = coded_by if coded_by is not None else coded_by_tokens(db, document.id)
     values: dict[str, Any] = {
         "control_number": document_identifier(
             snapshot.source_item_id,
@@ -282,11 +298,9 @@ def build_document_projection(
         "source_modified_at": snapshot.source_modified_at,
         "file_date": snapshot.file_date,
         # Derived from the Core fact ledger; absent when no live fact cites the document.
-        "fact_state": (
-            document_fact_states(db, [document.id])[document.id] if fact_state is _UNRESOLVED else fact_state
-        ),
+        "fact_state": resolved_fact_state,
     }
-    values.update(current_metadata_values(db, document.id, definitions))
+    values.update(metadata_values)
     indexed_values = {
         definition.key: _index_metadata_value(
             values.get(definition.key, _metadata_lookup(snapshot, definition.key)),
@@ -304,13 +318,16 @@ def build_document_projection(
     embedding_settings = get_embedding_settings()
     processing = processing_configuration(get_settings(), embedding_settings)
     configuration_hash = canonical_hash(processing)
+    # Chunk and vector artifacts are remote object reads. All relational input
+    # needed below has already been materialized into plain values.
+    db.commit()
     chunk_artifacts = load_current_chunk_artifacts(
         collection_item_id=document.collection_item_id,
         configuration_hash=configuration_hash,
         compatible_embedding=processing["embedding"],
-        actor_user_id=import_job.created_by_user_id,
-        tenant_id=matter.client.tenant_id,
-        client_id=matter.client_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
     )
     chunks: list[dict[str, Any]] = []
     if chunk_artifacts is not None:
@@ -331,15 +348,15 @@ def build_document_projection(
         ]
     projection: dict[str, Any] = {
         "document_id": str(document.id),
-        "tenant_id": str(matter.client.tenant_id),
-        "client_id": str(matter.client_id),
+        "tenant_id": str(tenant_id),
+        "client_id": str(client_id),
         "matter_id": str(matter.id),
         "source_collection_id": str(document.source_collection_id),
         "collection_item_id": str(document.collection_item_id),
         "batch_ids": [str(value) for value in (batch_ids or [])],
         "batch_topics": batch_topics or [],
         "batch_coding": batch_coding or [],
-        "coded_by": coded_by if coded_by is not None else coded_by_tokens(db, document.id),
+        "coded_by": resolved_coded_by,
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -395,10 +412,7 @@ class SearchIndexManager:
         current_indices = self.client.alias_indices(generation.alias_name)
         if current_indices == [generation.index_name]:
             return
-        actions = [
-            {"remove": {"index": index_name, "alias": generation.alias_name}}
-            for index_name in current_indices
-        ]
+        actions = [{"remove": {"index": index_name, "alias": generation.alias_name}} for index_name in current_indices]
         actions.append({"add": {"index": generation.index_name, "alias": generation.alias_name}})
         self.client.update_aliases(actions)
 
@@ -456,9 +470,7 @@ class SearchIndexManager:
                     self.client.delete_index(index_name)
             generation_by_id = {generation.id: generation for generation in generations}
             batches = list(
-                self.db.scalars(
-                    select(ReviewBatch).where(ReviewBatch.search_index_generation_id.in_(generation_by_id))
-                )
+                self.db.scalars(select(ReviewBatch).where(ReviewBatch.search_index_generation_id.in_(generation_by_id)))
             )
             for batch in batches:
                 generation = generation_by_id[batch.search_index_generation_id]
@@ -759,11 +771,15 @@ class SearchIndexManager:
         operation_id: uuid.UUID | None = None,
         total_documents: int | None = None,
     ) -> int:
-        total = total_documents if total_documents is not None else int(
-            self.db.scalar(
-                select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
+        total = (
+            total_documents
+            if total_documents is not None
+            else int(
+                self.db.scalar(
+                    select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
+                )
+                or 0
             )
-            or 0
         )
         processed = 0
         indexed = 0
@@ -896,8 +912,7 @@ class SearchIndexManager:
         unsupported_keys = set(requested_keys) - {"email_domain", FACT_STATE_KEY}
         if unsupported_keys:
             raise ValueError(
-                "Explicit system metadata backfill is not implemented for: "
-                + ", ".join(sorted(unsupported_keys))
+                "Explicit system metadata backfill is not implemented for: " + ", ".join(sorted(unsupported_keys))
             )
         fact_state_updated = 0
         if FACT_STATE_KEY in requested_keys:
@@ -1019,7 +1034,15 @@ class SearchIndexManager:
             )
         return len(document_ids)
 
-    def upsert_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
+    def upsert_documents(
+        self,
+        matter_id: uuid.UUID,
+        document_ids: list[uuid.UUID],
+        *,
+        operation: SearchProjectionOperation | None = None,
+    ) -> int:
+        """Project an explicit document scope with durable page checkpoints."""
+
         generation = self.ensure(matter_id)
         definitions = list(
             self.db.scalars(
@@ -1029,19 +1052,261 @@ class SearchIndexManager:
                 )
             )
         )
-        documents = list(
-            self.db.scalars(
-                select(MatterDocument).where(
-                    MatterDocument.matter_id == matter_id,
-                    MatterDocument.id.in_(document_ids),
+        checkpoint = 0
+        retry_document_ids: list[uuid.UUID] = []
+        if operation is not None:
+            raw_checkpoint = operation.payload.get("next_document_offset", 0)
+            if isinstance(raw_checkpoint, int) and raw_checkpoint >= 0:
+                checkpoint = min(raw_checkpoint, len(document_ids))
+            raw_retry_ids = operation.payload.get("retry_document_ids", [])
+            if isinstance(raw_retry_ids, list):
+                retry_document_ids = [uuid.UUID(value) for value in raw_retry_ids]
+
+        def save_progress(*, next_offset: int, failed_ids: list[str] | None = None) -> None:
+            if operation is None:
+                return
+            operation.payload = {
+                **operation.payload,
+                "next_document_offset": next_offset,
+                "retry_document_ids": failed_ids or [],
+                "progress": {
+                    "phase": "PROJECTING_DOCUMENTS",
+                    "processed_documents": next_offset,
+                    "total_documents": len(document_ids),
+                    "updated_at": utcnow().isoformat(),
+                },
+            }
+            self.db.commit()
+
+        def project_page(page_ids: list[uuid.UUID], *, next_offset: int) -> None:
+            documents_by_id = {
+                document.id: document
+                for document in self.db.scalars(
+                    select(MatterDocument).where(
+                        MatterDocument.matter_id == matter_id,
+                        MatterDocument.id.in_(page_ids),
+                    )
                 )
-            )
-        )
-        self._bulk_upsert(generation.index_name, documents, definitions)
+            }
+            documents = [documents_by_id[document_id] for document_id in page_ids if document_id in documents_by_id]
+            try:
+                self._bulk_upsert(generation.index_name, documents, definitions)
+            except OpenSearchBulkError as exc:
+                # A bulk request can apply some items before reporting a failure.
+                # Advance the source cursor and retain only rejected IDs for retry.
+                failed_ids = exc.failed_document_ids or [str(value) for value in page_ids]
+                save_progress(next_offset=next_offset, failed_ids=failed_ids)
+                raise
+            save_progress(next_offset=next_offset)
+
+        if retry_document_ids:
+            project_page(retry_document_ids, next_offset=checkpoint)
+
+        batch_size = self.settings.search_bulk_batch_size
+        for offset in range(checkpoint, len(document_ids), batch_size):
+            page_ids = document_ids[offset : offset + batch_size]
+            project_page(page_ids, next_offset=offset + len(page_ids))
+
         self.client.refresh(generation.index_name)
         generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
-        return len(documents)
+        return len(document_ids)
+
+    def upsert_metadata_fields(
+        self,
+        matter_id: uuid.UUID,
+        document_ids: list[uuid.UUID],
+        definition_ids: list[uuid.UUID],
+        *,
+        operation: SearchProjectionOperation | None = None,
+    ) -> int:
+        """Project only changed matter metadata fields and coding provenance."""
+
+        document_ids = list(dict.fromkeys(document_ids))
+        definition_ids = list(dict.fromkeys(definition_ids))
+        generation = self.ensure(matter_id)
+        definitions = list(
+            self.db.scalars(
+                select(MetadataDefinition).where(
+                    MetadataDefinition.matter_id == matter_id,
+                    MetadataDefinition.id.in_(definition_ids),
+                    MetadataDefinition.status == "ACTIVE",
+                    MetadataDefinition.searchable.is_(True),
+                ).order_by(MetadataDefinition.key, MetadataDefinition.id)
+            )
+        )
+        definitions_by_id = {definition.id: definition for definition in definitions}
+        missing_definition_ids = set(definition_ids) - set(definitions_by_id)
+        if missing_definition_ids:
+            raise ValueError(
+                "Matter metadata projection references inactive, non-searchable, or missing fields: "
+                + ", ".join(sorted(str(value) for value in missing_definition_ids))
+            )
+
+        checkpoint = 0
+        retry_document_ids: list[uuid.UUID] = []
+        if operation is not None:
+            raw_checkpoint = operation.payload.get("next_document_offset", 0)
+            if isinstance(raw_checkpoint, int) and raw_checkpoint >= 0:
+                checkpoint = min(raw_checkpoint, len(document_ids))
+            raw_retry_ids = operation.payload.get("retry_document_ids", [])
+            if isinstance(raw_retry_ids, list):
+                retry_document_ids = [uuid.UUID(value) for value in raw_retry_ids]
+
+        def save_progress(
+            *,
+            next_offset: int,
+            failed_ids: list[str] | None = None,
+            skipped_failures: list[DocumentProjectionFailure] | None = None,
+        ) -> None:
+            if operation is None:
+                return
+            existing_skips = operation.payload.get("skipped_documents", [])
+            skips_by_document = {
+                str(value["document_id"]): value
+                for value in existing_skips
+                if isinstance(value, dict) and value.get("document_id")
+            }
+            for failure in skipped_failures or []:
+                skips_by_document[failure.document_id] = failure.as_dict()
+            operation.payload = {
+                **operation.payload,
+                "next_document_offset": next_offset,
+                "retry_document_ids": failed_ids or [],
+                "skipped_documents": list(skips_by_document.values()),
+                "progress": {
+                    "phase": "PROJECTING_MATTER_CODING",
+                    "processed_documents": next_offset,
+                    "total_documents": len(document_ids),
+                    "updated_at": utcnow().isoformat(),
+                },
+            }
+            self.db.commit()
+
+        def project_page(page_ids: list[uuid.UUID], *, next_offset: int) -> None:
+            rows_by_document_definition: dict[
+                tuple[uuid.UUID, uuid.UUID], list[DocumentMetadataCurrent]
+            ] = {}
+            rows = self.db.scalars(
+                select(DocumentMetadataCurrent)
+                .where(
+                    DocumentMetadataCurrent.matter_document_id.in_(page_ids),
+                    DocumentMetadataCurrent.metadata_definition_id.in_(definitions_by_id),
+                )
+                .order_by(
+                    DocumentMetadataCurrent.matter_document_id,
+                    DocumentMetadataCurrent.metadata_definition_id,
+                    DocumentMetadataCurrent.value_ordinal,
+                )
+            )
+            for row in rows:
+                rows_by_document_definition.setdefault(
+                    (row.matter_document_id, row.metadata_definition_id), []
+                ).append(row)
+            coding_actors = coded_by_tokens_for_documents(self.db, page_ids)
+            hierarchical_definitions = [
+                definition for definition in definitions if is_hierarchical_field(definition)
+            ]
+            fact_states = (
+                document_fact_states(self.db, page_ids)
+                if any(definition.key == FACT_STATE_KEY for definition in definitions)
+                else {}
+            )
+            operations: list[tuple[str, str, dict[str, Any]]] = []
+            for document_id in page_ids:
+                metadata: dict[str, Any] = {}
+                for definition in definitions:
+                    definition_rows = rows_by_document_definition.get((document_id, definition.id), [])
+                    if definition.key == FACT_STATE_KEY:
+                        raw_value: Any = fact_states.get(document_id)
+                    elif not definition_rows or definition_rows[0].resolution_state == "EMPTY":
+                        raw_value = [] if definition.cardinality == "MULTIPLE" else None
+                    elif definition_rows[0].resolution_state == "VALUE":
+                        resolved = [event_value(row) for row in definition_rows]
+                        raw_value = resolved if definition.cardinality == "MULTIPLE" else resolved[0]
+                    else:
+                        raw_value = [] if definition.cardinality == "MULTIPLE" else None
+                    metadata[definition.key] = _index_metadata_value(raw_value, definition)
+
+                if hierarchical_definitions:
+                    operations.append(
+                        (
+                            "update",
+                            str(document_id),
+                            {
+                                "script": {
+                                    "lang": "painless",
+                                    "source": (
+                                        "if (ctx._source.metadata == null) { ctx._source.metadata = new HashMap(); } "
+                                        "for (entry in params.metadata.entrySet()) { "
+                                        "ctx._source.metadata[entry.getKey()] = entry.getValue(); } "
+                                        "ctx._source.coded_by = params.coded_by; "
+                                        "ArrayList retained = new ArrayList(); "
+                                        "if (ctx._source.hierarchy_facets != null) { "
+                                        "for (item in ctx._source.hierarchy_facets) { "
+                                        "if (!params.field_keys.contains(item.field)) { retained.add(item); } } } "
+                                        "retained.addAll(params.hierarchy_facets); "
+                                        "ctx._source.hierarchy_facets = retained;"
+                                    ),
+                                    "params": {
+                                        "metadata": metadata,
+                                        "coded_by": coding_actors[document_id],
+                                        "field_keys": [definition.key for definition in hierarchical_definitions],
+                                        "hierarchy_facets": hierarchy_entries(
+                                            hierarchical_definitions,
+                                            metadata,
+                                        ),
+                                    },
+                                }
+                            },
+                        )
+                    )
+                else:
+                    operations.append(
+                        (
+                            "update",
+                            str(document_id),
+                            {
+                                "doc": {
+                                    "metadata": metadata,
+                                    "coded_by": coding_actors[document_id],
+                                }
+                            },
+                        )
+                    )
+            self.db.commit()
+            try:
+                self.client.bulk(generation.index_name, operations)
+            except OpenSearchBulkError as exc:
+                if is_retryable_opensearch_error(exc):
+                    save_progress(
+                        next_offset=next_offset,
+                        failed_ids=exc.failed_document_ids or [str(value) for value in page_ids],
+                    )
+                    raise
+                failed_document_ids = exc.failed_document_ids or [str(value) for value in page_ids]
+                failures = [
+                    DocumentProjectionFailure(
+                        document_id=document_id,
+                        error_type="OpenSearchFieldProjectionFailure",
+                        error_message=str(exc)[:1000],
+                    )
+                    for document_id in failed_document_ids
+                ]
+                save_progress(next_offset=next_offset, skipped_failures=failures)
+                return
+            save_progress(next_offset=next_offset)
+
+        if retry_document_ids:
+            project_page(retry_document_ids, next_offset=checkpoint)
+
+        batch_size = self.settings.search_bulk_batch_size
+        for offset in range(checkpoint, len(document_ids), batch_size):
+            page_ids = document_ids[offset : offset + batch_size]
+            project_page(page_ids, next_offset=offset + len(page_ids))
+
+        self.client.refresh(generation.index_name)
+        return len(document_ids)
 
     def upsert_embedding_job(
         self,
@@ -1348,9 +1613,7 @@ class SearchIndexManager:
             )
             for offset in range(0, len(document_ids), self.settings.search_bulk_batch_size):
                 page = document_ids[offset : offset + self.settings.search_bulk_batch_size]
-                projected_by_document: dict[uuid.UUID, list[dict[str, Any]]] = {
-                    document_id: [] for document_id in page
-                }
+                projected_by_document: dict[uuid.UUID, list[dict[str, Any]]] = {document_id: [] for document_id in page}
                 rows = self.db.execute(
                     select(ReviewBatchRunValue, MetadataDefinition)
                     .join(
@@ -1485,9 +1748,7 @@ class SearchIndexManager:
                         "topic_key": topic_key,
                     }
                 )
-            batch_coding: dict[uuid.UUID, list[dict[str, Any]]] = {
-                document.id: [] for document in batch
-            }
+            batch_coding: dict[uuid.UUID, list[dict[str, Any]]] = {document.id: [] for document in batch}
             coding_rows = self.db.execute(
                 select(
                     ReviewBatchRunValue,
@@ -1496,8 +1757,7 @@ class SearchIndexManager:
                 )
                 .join(
                     ReviewBatchSearchCodingProjection,
-                    ReviewBatchSearchCodingProjection.review_batch_run_id
-                    == ReviewBatchRunValue.review_batch_run_id,
+                    ReviewBatchSearchCodingProjection.review_batch_run_id == ReviewBatchRunValue.review_batch_run_id,
                 )
                 .join(
                     MetadataDefinition,
@@ -1523,6 +1783,11 @@ class SearchIndexManager:
                 )
                 if projected is not None:
                     batch_coding[value.matter_document_id].append(projected)
+            # All coordinator-session data for this page is now materialized.
+            # Release its transaction before worker threads perform artifact I/O
+            # and before the OpenSearch bulk request can leave it idle long enough
+            # for PostgreSQL's idle-in-transaction timeout to terminate it.
+            self.db.commit()
             bind = self.db.get_bind()
             worker_count = min(self.settings.search_projection_document_concurrency, len(batch))
             if bind.dialect.name == "sqlite":
@@ -1597,7 +1862,10 @@ class SearchIndexManager:
                         document_coding_actors,
                         document_fact_state,
                     ) = item
-                    with session_factory() as worker_db:
+                    with (
+                        worker_database_slot(operation="search-document-projection"),
+                        session_factory() as worker_db,
+                    ):
                         document = worker_db.get(MatterDocument, document_id)
                         if document is None:
                             error = ValueError("Matter document disappeared during search projection")
@@ -1832,10 +2100,21 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                         operation=operation,
                     )
                 else:
-                    manager.upsert_documents(
-                        operation.matter_id,
-                        [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
-                    )
+                    document_ids = [uuid.UUID(value) for value in operation.payload.get("document_ids", [])]
+                    raw_definition_ids = operation.payload.get("metadata_definition_ids")
+                    if isinstance(raw_definition_ids, list) and raw_definition_ids:
+                        manager.upsert_metadata_fields(
+                            operation.matter_id,
+                            document_ids,
+                            [uuid.UUID(value) for value in raw_definition_ids],
+                            operation=operation,
+                        )
+                    else:
+                        manager.upsert_documents(
+                            operation.matter_id,
+                            document_ids,
+                            operation=operation,
+                        )
             elif operation.kind == "DOCUMENT_DELETE":
                 manager.delete_documents(
                     operation.matter_id,
@@ -1859,6 +2138,10 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                 operation.matter_id,
             )
         except SearchReindexRequired as exc:
+            db.rollback()
+            operation = db.get(SearchProjectionOperation, operation_id)
+            if operation is None:
+                raise ValueError("Search projection operation disappeared while recording its result") from exc
             operation.status = "AWAITING_USER"
             operation.payload = {**operation.payload, "schema_change": exc.plan.as_dict()}
             operation.error_message = None
@@ -1870,6 +2153,10 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                 list(exc.plan.reasons),
             )
         except Exception as exc:
+            db.rollback()
+            operation = db.get(SearchProjectionOperation, operation_id)
+            if operation is None:
+                raise ValueError("Search projection operation disappeared while recording its failure") from exc
             operation.status = "FAILED"
             operation.error_message = str(exc)[:4000]
             db.commit()

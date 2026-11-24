@@ -55,6 +55,13 @@ function renderPanel(tab: EntitiesTab, canManage = true) {
 beforeEach(() => {
   currentParams = new URLSearchParams();
   vi.mocked(coreApi).mockImplementation(async (path, init) => {
+    if (path === "/v1/matters/matter-1/identity-analysis-jobs?limit=5") return [] as never;
+    if (path === "/v1/matters/matter-1/identity-analysis-jobs" && init?.method === "POST") return {
+      id: "analysis-1", status: "QUEUED", current_stage: "QUEUED", total_document_count: 100,
+      processed_document_count: 0, documents_with_participants_count: 0, identity_count: 0,
+      domain_count: 0, invalid_participant_count: 0, failure_summary: null,
+      created_at: "2026-11-20T12:00:00Z", completed_at: null,
+    } as never;
     if (path.includes("entity_type=ORGANIZATION&limit=500")) return { items: [entity({ id: "org-1", entity_type: "ORGANIZATION", display_name: "Acme Corp", variants: [] })], total: 1 } as never;
     if (path.startsWith("/v1/matters/matter-1/entities?")) return { items: [entity()], total: 1 } as never;
     if (path === "/v1/matters/matter-1/entities" && init?.method === "POST") return entity({ display_name: null, email: "unknown@example.com" }) as never;
@@ -110,6 +117,30 @@ describe("EntitiesPanel", () => {
     await waitFor(() => expect(vi.mocked(coreApi).mock.calls.some(([path]) => path === "/v1/matters/matter-1/entities/entity-1/reject")).toBe(true));
   });
 
+  it("distinguishes a proposed law firm as a privilege-review signal", async () => {
+    const fallback = vi.mocked(coreApi).getMockImplementation();
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path.startsWith("/v1/matters/matter-1/entities?status=")) return {
+        items: [entity({
+          entity_type: "ORGANIZATION",
+          display_name: "Kirkland & Ellis",
+          organization_category: "LAW_FIRM",
+          email: null,
+          organization_id: null,
+          title: null,
+          variants: [],
+        })],
+        total: 1,
+      } as never;
+      if (fallback) return fallback(path, init);
+      throw new Error(`Unexpected request ${path}`);
+    });
+
+    renderPanel("proposed");
+    expect(await screen.findByRole("link", { name: "Kirkland & Ellis" })).toBeInTheDocument();
+    expect(screen.getByText("Law firm · privilege signal")).toBeInTheDocument();
+  });
+
   it("creates an email-only entity without inventing a display name", async () => {
     const user = userEvent.setup();
     renderPanel("directory");
@@ -131,5 +162,69 @@ describe("EntitiesPanel", () => {
     await screen.findByRole("link", { name: "Jane Smith" });
     expect(screen.queryByRole("button", { name: "New entity" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm Jane Smith" })).not.toBeInTheDocument();
+  });
+
+  it("manually starts matter Identity Analysis without attaching it to an entity", async () => {
+    const user = userEvent.setup();
+    renderPanel("directory");
+    await screen.findByText("No Identity Analysis has been run for this matter.");
+    await user.click(screen.getByRole("button", { name: "Run Identity Analysis" }));
+    await waitFor(() => expect(vi.mocked(coreApi).mock.calls.some(([path, init]) =>
+      path === "/v1/matters/matter-1/identity-analysis-jobs" && init?.method === "POST",
+    )).toBe(true));
+  });
+
+  it("reviews and accepts a potential law-firm domain without treating it as privilege", async () => {
+    const user = userEvent.setup();
+    const fallback = vi.mocked(coreApi).getMockImplementation();
+    let accepted = false;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/identity-analysis-jobs?limit=5") return [{
+        id: "analysis-1", matter_id: "matter-1", status: "COMPLETED", current_stage: "COMPLETED",
+        total_document_count: 100, processed_document_count: 100, documents_with_participants_count: 80,
+        identity_count: 30, domain_count: 12, invalid_participant_count: 2, result_artifact_id: "artifact-1",
+        summary: {}, failure_code: null, failure_summary: null, failure_retriable: false,
+        created_by_user_id: "user-1", started_at: "2026-11-20T12:00:00Z",
+        completed_at: "2026-11-20T12:01:00Z", created_at: "2026-11-20T12:00:00Z",
+        updated_at: "2026-11-20T12:01:00Z",
+      }] as never;
+      if (path.endsWith("/identity-analysis-jobs/analysis-1/domain-recommendation-runs?limit=5")) return [{
+        id: "domain-run-1", matter_id: "matter-1", identity_analysis_id: "analysis-1", status: "COMPLETED",
+        current_stage: "COMPLETED", domain_count: 11, processed_domain_count: 11, recommendation_count: 1,
+        result_artifact_id: "artifact-2", summary: {}, failure_code: null, failure_summary: null,
+        failure_retriable: false, created_by_user_id: "user-1", started_at: "2026-11-20T12:02:00Z",
+        completed_at: "2026-11-20T12:03:00Z", created_at: "2026-11-20T12:02:00Z",
+        updated_at: "2026-11-20T12:03:00Z",
+      }] as never;
+      if (path.endsWith("/domain-recommendation-runs/domain-run-1/recommendations")) return {
+        run_id: "domain-run-1", reviewed_domain_count: 11, recommendations: [{
+          domain: "mail.example-law.com", canonical_domain: "example-law.com",
+          organization_name: "Example Law LLP", organization_category: "LAW_FIRM", confidence: 0.93,
+          rationale: "The domain and participant names consistently identify a law firm.",
+          evidence_signals: ["Example Law LLP"], alternative_categories: [], decision: accepted ? "ACCEPTED" : null, entity_id: accepted ? "entity-2" : null,
+        }],
+      } as never;
+      if (path.endsWith("/domain-recommendation-runs/domain-run-1/decisions") && init?.method === "POST") {
+        accepted = true;
+        return {} as never;
+      }
+      if (fallback) return fallback(path, init);
+      throw new Error(`Unexpected request ${path}`);
+    });
+
+    renderPanel("directory");
+    expect(await screen.findByText("Example Law LLP")).toBeInTheDocument();
+    expect(screen.getByText(/does not establish representation or make any document privileged/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Accept organization" }));
+    await waitFor(() => {
+      const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/domain-recommendation-runs/domain-run-1/decisions"));
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        domain: "mail.example-law.com",
+        decision: "ACCEPTED",
+        organization_name: "Example Law LLP",
+      });
+    });
+    await waitFor(() => expect(screen.queryByText("Example Law LLP")).not.toBeInTheDocument());
+    expect(screen.getByText(/0 proposed · 0 already confirmed · 0 legacy candidates · 1 accepted · 0 rejected/)).toBeInTheDocument();
   });
 });

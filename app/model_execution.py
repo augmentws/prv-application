@@ -175,6 +175,26 @@ def _cache_model_settings(
     return settings
 
 
+def provider_compatible_model_settings(
+    model_settings: dict[str, Any],
+    *,
+    resolved_model: Any,
+) -> dict[str, Any]:
+    """Remove cross-provider settings that the selected provider cannot accept.
+
+    Managed skills intentionally carry provider-neutral policy. OpenAI reasoning
+    models reject sampling temperature, while Gemini accepts it. Omitting that
+    setting is deterministic from the resolved provider and keeps the published
+    skill portable without mutating its stored policy.
+    """
+
+    settings = dict(model_settings)
+    identity = external_model_identity(resolved_model)
+    if identity is not None and identity[0] == "openai":
+        settings.pop("temperature", None)
+    return settings
+
+
 def assemble_structured_prompt(
     request: StructuredModelRequest,
     *,
@@ -232,8 +252,12 @@ def assemble_structured_prompt(
         prompt = [stable_prefix, CachePoint(ttl=inline_ttl), dynamic_payload]
     else:
         prompt = f"{stable_prefix}\n{dynamic_payload}"
-    settings = _cache_model_settings(
+    compatible_settings = provider_compatible_model_settings(
         request.model_settings,
+        resolved_model=resolved_model,
+    )
+    settings = _cache_model_settings(
+        compatible_settings,
         provider=provider,
         cache_fingerprint=cache_fingerprint,
         cache_policy=request.cache_policy,

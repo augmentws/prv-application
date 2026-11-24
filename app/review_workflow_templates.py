@@ -143,13 +143,95 @@ FIRST_PASS_REVIEW = replace(
     ),
 )
 
+PRIVILEGE_REVIEW_V1 = ReviewWorkflowTemplateSpec(
+    key="PRIVILEGE_REVIEW",
+    version=1,
+    schema_version=1,
+    name="Privilege Review",
+    description=(
+        "Family-aware privilege review of a frozen responsive population, with identity context, "
+        "evidence, adjudication, human review, exceptions, and production clearance."
+    ),
+    workflow_type="PRIVILEGE_REVIEW",
+    phases=(
+        ReviewWorkflowPhaseSpec("FOUNDATION", "Program foundation", 1),
+        ReviewWorkflowPhaseSpec("ANALYSIS", "Evidence and adjudication", 2),
+        ReviewWorkflowPhaseSpec("REVIEW", "Human review and exceptions", 3),
+        ReviewWorkflowPhaseSpec("QC_COMPLETION", "QC and production clearance", 4),
+    ),
+    stages=(
+        ReviewWorkflowStageSpec("PRIVILEGE_FOUNDATION", "Frozen program inputs", "FOUNDATION", 1, "NONE", True),
+        ReviewWorkflowStageSpec("FAMILY_CONTEXT", "Family context", "FOUNDATION", 2, "PARTITIONED_SET"),
+        ReviewWorkflowStageSpec("PRIVILEGE_EVIDENCE", "Privilege evidence", "ANALYSIS", 3, "PARTITIONED_SET"),
+        ReviewWorkflowStageSpec("PRIVILEGE_ADJUDICATION", "Privilege adjudication", "ANALYSIS", 4, "PARTITIONED_SET"),
+        ReviewWorkflowStageSpec("PRIVILEGE_HUMAN_REVIEW", "Configured human review", "REVIEW", 5, "AD_HOC_BATCH", True),
+        ReviewWorkflowStageSpec("PRIVILEGE_EXCEPTIONS", "Exception resolution", "REVIEW", 6, "AD_HOC_BATCH", True),
+        ReviewWorkflowStageSpec("PRIVILEGE_QC", "Privilege QC", "QC_COMPLETION", 7, "AD_HOC_BATCH", True),
+        ReviewWorkflowStageSpec("PRIVILEGE_CLEARANCE", "Production clearance", "QC_COMPLETION", 8, "NONE", True),
+    ),
+)
+
+PRIVILEGE_REVIEW = ReviewWorkflowTemplateSpec(
+    key="PRIVILEGE_REVIEW",
+    version=2,
+    schema_version=1,
+    name="Privilege Review",
+    description=(
+        "Family-aware privilege review of a frozen responsive population, with assessed guidance, identity context, "
+        "evidence, adjudication, human review, exceptions, and production clearance."
+    ),
+    workflow_type="PRIVILEGE_REVIEW",
+    phases=(
+        ReviewWorkflowPhaseSpec("FOUNDATION", "Program foundation", 1),
+        ReviewWorkflowPhaseSpec("MATTER_DEFINITION", "Matter definition", 2),
+        ReviewWorkflowPhaseSpec("ANALYSIS", "Evidence and adjudication", 3),
+        ReviewWorkflowPhaseSpec("REVIEW", "Human review and exceptions", 4),
+        ReviewWorkflowPhaseSpec("QC_COMPLETION", "QC and production clearance", 5),
+    ),
+    stages=(
+        ReviewWorkflowStageSpec("PRIVILEGE_FOUNDATION", "Frozen program inputs", "FOUNDATION", 1, "NONE", True),
+        ReviewWorkflowStageSpec("FAMILY_CONTEXT", "Family context", "FOUNDATION", 2, "PARTITIONED_SET"),
+        ReviewWorkflowStageSpec(
+            "MATTER_DEFINITION", "Matter definition", "MATTER_DEFINITION", 3, "NONE", True
+        ),
+        ReviewWorkflowStageSpec(
+            "DEFINITION_ASSESSMENT", "Definition assessment", "MATTER_DEFINITION", 4, "AD_HOC_BATCH"
+        ),
+        ReviewWorkflowStageSpec(
+            "DEFINITION_REFINEMENT", "Definition refinement", "MATTER_DEFINITION", 5, "NONE", True
+        ),
+        ReviewWorkflowStageSpec(
+            "DEFINITION_ACCEPTANCE", "Definition acceptance", "MATTER_DEFINITION", 6, "NONE", True
+        ),
+        ReviewWorkflowStageSpec(
+            "PRIVILEGE_EVIDENCE", "Privilege evidence", "ANALYSIS", 7, "PARTITIONED_SET", True
+        ),
+        ReviewWorkflowStageSpec("PRIVILEGE_ADJUDICATION", "Privilege adjudication", "ANALYSIS", 8, "PARTITIONED_SET"),
+        ReviewWorkflowStageSpec(
+            "PRIVILEGE_HUMAN_REVIEW", "Configured human review", "REVIEW", 9, "AD_HOC_BATCH", True
+        ),
+        ReviewWorkflowStageSpec(
+            "PRIVILEGE_EXCEPTIONS", "Exception resolution", "REVIEW", 10, "AD_HOC_BATCH", True
+        ),
+        ReviewWorkflowStageSpec("PRIVILEGE_QC", "Privilege QC", "QC_COMPLETION", 11, "AD_HOC_BATCH", True),
+        ReviewWorkflowStageSpec(
+            "PRIVILEGE_CLEARANCE", "Production clearance", "QC_COMPLETION", 12, "NONE", True
+        ),
+    ),
+)
+
 
 REVIEW_WORKFLOW_TEMPLATE_VERSIONS = {
     (FIRST_PASS_REVIEW_V1.key, FIRST_PASS_REVIEW_V1.version): FIRST_PASS_REVIEW_V1,
     (FIRST_PASS_REVIEW_V2.key, FIRST_PASS_REVIEW_V2.version): FIRST_PASS_REVIEW_V2,
     (FIRST_PASS_REVIEW.key, FIRST_PASS_REVIEW.version): FIRST_PASS_REVIEW,
+    (PRIVILEGE_REVIEW_V1.key, PRIVILEGE_REVIEW_V1.version): PRIVILEGE_REVIEW_V1,
+    (PRIVILEGE_REVIEW.key, PRIVILEGE_REVIEW.version): PRIVILEGE_REVIEW,
 }
-REVIEW_WORKFLOW_TEMPLATES = {FIRST_PASS_REVIEW.key: FIRST_PASS_REVIEW}
+REVIEW_WORKFLOW_TEMPLATES = {
+    FIRST_PASS_REVIEW.key: FIRST_PASS_REVIEW,
+    PRIVILEGE_REVIEW.key: PRIVILEGE_REVIEW,
+}
 
 
 class ReviewWorkflowTemplateError(ValueError):

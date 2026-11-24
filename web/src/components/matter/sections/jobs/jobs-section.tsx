@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useMatter } from "@/components/matter/matter-context";
 import { BulkTagJobs } from "@/components/matter/sections/jobs/bulk-tag-jobs";
 import { ClassificationAnalysisJobs } from "@/components/matter/sections/jobs/classification-analysis-jobs";
+import { CodingComparisonJobs } from "@/components/matter/sections/jobs/coding-comparison-jobs";
 import { EmbeddingJobs } from "@/components/matter/sections/jobs/embedding-jobs";
 import { ImportJobs } from "@/components/matter/sections/jobs/import-jobs";
 import { QuestionAnsweringJobs } from "@/components/matter/sections/jobs/question-answering-jobs";
@@ -36,6 +37,7 @@ export function JobsSection({ jobType, selectedJobId, batchSetId, reviewBatchId 
       : jobType === "DOCUMENT_IMPORTS" ? <ImportJobs selectedJobId={selectedJobId} />
       : jobType === "QUESTION_ANSWERING" ? <QuestionAnsweringJobs batchSetId={batchSetId} reviewBatchId={reviewBatchId} />
       : jobType === "CLASSIFICATION_ANALYSIS" ? <ClassificationAnalysisJobs selectedJobId={selectedJobId} />
+      : jobType === "CODING_COMPARISONS" ? <CodingComparisonJobs />
       : <SearchExportJobs />}
   </div>;
 }

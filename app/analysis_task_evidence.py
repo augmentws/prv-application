@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +20,10 @@ from app.decision_specifications import (
 from app.document_evidence import ParagraphMap
 
 EVIDENCE_LOCALIZATION_VERSION = "jev-conditional-evidence-v2"
-MAX_EVIDENCE_PARAGRAPHS = 255
+INLINE_EVIDENCE_LOCALIZATION_VERSION = "decision-inline-evidence-v1"
+# Choice questions may expose at most 255 options. Reserve one option for
+# ``no_support`` instead of creating a provider request that cannot validate.
+MAX_EVIDENCE_PARAGRAPHS = 254
 MAX_DECISION_REQUEST_QUESTIONS = 500
 MAX_STORED_EVIDENCE_CANDIDATES = 5
 
@@ -48,6 +53,7 @@ def _companion_questions(
     question_key: str,
     question: DecisionQuestion,
     paragraph_map: ParagraphMap,
+    inline: bool = False,
 ) -> tuple[EvidenceQuestionPlan, dict[str, DecisionQuestion]]:
     exists_key = f"internal_evidence.q{ordinal}.exists"
     location_key = f"internal_evidence.q{ordinal}.location"
@@ -63,13 +69,19 @@ def _companion_questions(
         "meaning": "No document paragraph directly supports the frozen classification outcome"
     }
     context = _decision_question_context(question)
+    classification_outcome = (
+        "The paired decision question is being answered in this same request. Locate evidence for the "
+        "outcome that is best supported by the document; do not apply a different decision standard."
+        if inline
+        else (
+            "The classification answer is frozen in classification.answers. Locate evidence for that outcome; "
+            "do not reclassify the document."
+        )
+    )
     shared_instruction = {
         "decision_question_key": question_key,
         "decision_question": context,
-        "classification_outcome": (
-            "The classification answer is frozen in classification.answers. Locate evidence for that outcome; "
-            "do not reclassify the document."
-        ),
+        "classification_outcome": classification_outcome,
         "evidence_scope": (
             "Use only document.paragraphs as evidence. Matter guidance explains the decision standard but is not "
             "document evidence. The selected paragraph must directly support the frozen classification outcome."
@@ -212,22 +224,92 @@ def build_conditional_evidence_questions(
     return questions, tuple(plans)
 
 
+def build_inline_evidence_questions(
+    specification: DecisionSpecification,
+    paragraph_map: ParagraphMap,
+) -> tuple[dict[str, DecisionQuestion], tuple[EvidenceQuestionPlan, ...]]:
+    """Build evidence companions that can travel with the classification request.
+
+    The provider answer contract does not support arbitrary citation fields. These
+    typed companion questions preserve that contract while avoiding a second read of
+    the document. Evidence for outcomes that do not drive policy is discarded after
+    the primary answers are evaluated.
+    """
+
+    required = [
+        (key, question)
+        for key, question in specification.questions.items()
+        if question.evidence.required
+    ]
+    if not required:
+        return {}, ()
+    if (
+        not paragraph_map.paragraphs
+        or len(paragraph_map.paragraphs) > MAX_EVIDENCE_PARAGRAPHS
+        or len(specification.questions) + 2 * len(required) > MAX_DECISION_REQUEST_QUESTIONS
+    ):
+        # The legacy conditional path records the precise unavailable reason and
+        # remains the compatibility fallback for requests that cannot be combined.
+        return {}, ()
+
+    questions: dict[str, DecisionQuestion] = {}
+    plans: list[EvidenceQuestionPlan] = []
+    for ordinal, (key, question) in enumerate(required, start=1):
+        plan, companions = _companion_questions(
+            ordinal=ordinal,
+            question_key=key,
+            question=question,
+            paragraph_map=paragraph_map,
+            inline=True,
+        )
+        collisions = set(specification.questions).intersection(companions) | set(questions).intersection(
+            companions
+        )
+        if collisions:
+            raise ValueError(f"Evidence question keys collide with specification questions: {sorted(collisions)}")
+        questions.update(companions)
+        plans.append(plan)
+    return questions, tuple(plans)
+
+
+def select_evidence_plans(
+    plans: tuple[EvidenceQuestionPlan, ...],
+    question_keys: tuple[str, ...],
+) -> tuple[EvidenceQuestionPlan, ...]:
+    """Retain inline evidence only for outcomes selected by decision policy."""
+
+    selected = set(question_keys)
+    return tuple(plan for plan in plans if plan.question_key in selected)
+
+
 def collect_conditional_evidence(
     plans: tuple[EvidenceQuestionPlan, ...],
     answers: dict[str, DecisionAnswer],
+    *,
+    method: str = EVIDENCE_LOCALIZATION_VERSION,
+    primary_answers: dict[str, DecisionAnswer] | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Validate second-pass evidence answers and retain compact, auditable paragraph references."""
+    """Validate evidence answers and retain compact, auditable paragraph references."""
 
     evidence: dict[str, Any] = {}
     complete = True
     for plan in plans:
         entry: dict[str, Any] = {
-            "method": EVIDENCE_LOCALIZATION_VERSION,
+            "method": method,
             "required": plan.required,
             "minimum_exists_probability": plan.minimum_exists_probability,
             "paragraph_ids": [],
             "complete": False,
         }
+        primary_answer = (primary_answers or {}).get(plan.question_key)
+        if primary_answer is not None:
+            canonical = json.dumps(
+                primary_answer.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            entry["answer_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         if plan.unavailable_reason is not None:
             entry["reason"] = plan.unavailable_reason
             evidence[plan.question_key] = entry

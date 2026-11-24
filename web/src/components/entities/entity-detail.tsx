@@ -1,13 +1,13 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Bot, CheckCircle2, ChevronRight, GitMerge, Pencil, Split, XCircle } from "lucide-react";
+import { ArrowLeft, Bot, CheckCircle2, ChevronRight, GitMerge, Link2, Pencil, Split, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 
-import { EntityStatusBadge, EntityTypeLabel, RejectEntityDialog, useOrganizationNames } from "@/components/entities/entities-panel";
+import { EntityStatusBadge, EntityTypeLabel, OrganizationCategoryBadge, organizationCategoryLabel, RejectEntityDialog, useOrganizationNames } from "@/components/entities/entities-panel";
 import { FactStatusBadge } from "@/components/facts/fact-status-badge";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { ResourcePageHeader } from "@/components/resource-page-header";
@@ -24,6 +24,9 @@ import type {
   EffectivePermissionsRead,
   MatterEntityPage,
   MatterEntityRead,
+  MatterEntityRelationshipCreate,
+  MatterEntityRelationshipDefinitionRead,
+  MatterEntityRelationshipRead,
   MatterEntityUpdate,
   MatterEntityVariantRead,
   MatterFactPage,
@@ -46,6 +49,8 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
   const [editing, setEditing] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [relationshipType, setRelationshipType] = useState("");
+  const [relationshipTargetId, setRelationshipTargetId] = useState("");
   const client = useQuery({ queryKey: ["client", clientId], queryFn: () => coreApi<ClientRead>(`/v1/clients/${clientId}`) });
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
   const entityKey = ["matter-entity", matterId, entityId] as const;
@@ -72,12 +77,31 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
     }),
     enabled: Boolean(canonicalId) && canViewFacts,
   });
+  const relationships = useQuery({
+    queryKey: ["matter-entity-relationships", matterId, entityId],
+    queryFn: () => coreApi<MatterEntityRelationshipRead[]>(
+      `/v1/matters/${matterId}/entity-relationships?entity_id=${entityId}`,
+    ),
+  });
+  const relationshipDefinitions = useQuery({
+    queryKey: ["matter-entity-relationship-types", matterId],
+    queryFn: () => coreApi<MatterEntityRelationshipDefinitionRead[]>(
+      `/v1/matters/${matterId}/entity-relationships/types`,
+    ),
+    enabled: entity.data?.status === "CONFIRMED" && canManage,
+  });
+  const relationshipTargets = useQuery({
+    queryKey: ["matter-entity-relationship-targets", matterId],
+    queryFn: () => coreApi<MatterEntityPage>(`/v1/matters/${matterId}/entities?status=CONFIRMED&limit=500`),
+    enabled: entity.data?.status === "CONFIRMED" && canManage,
+  });
 
   function refresh() {
     void queryClient.invalidateQueries({ queryKey: ["matter-entity", matterId] });
     void queryClient.invalidateQueries({ queryKey: ["matter-entities", matterId] });
     void queryClient.invalidateQueries({ queryKey: ["matter-entity-organizations", matterId] });
     void queryClient.invalidateQueries({ queryKey: ["matter-facts", matterId] });
+    void queryClient.invalidateQueries({ queryKey: ["matter-entity-relationships", matterId] });
   }
 
   const action = useMutation({
@@ -96,6 +120,18 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
       refresh();
     },
   });
+  const createRelationship = useMutation({
+    mutationFn: (payload: MatterEntityRelationshipCreate) => coreApi<MatterEntityRelationshipRead>(
+      `/v1/matters/${matterId}/entity-relationships`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+    onSuccess: () => {
+      toast.success("Relationship added");
+      setRelationshipTargetId("");
+      refresh();
+    },
+    onError: (error) => toast.error(errorMessage(error, "The relationship could not be added")),
+  });
 
   if (entity.isPending || client.isPending || matter.isPending) return <TableLoading />;
   if (entity.error || client.error || matter.error) return <QueryError message={entity.error?.message ?? client.error?.message ?? matter.error?.message} />;
@@ -105,6 +141,21 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
   const entitiesHref = matterHref(clientId, matterId, current.status === "PROPOSED" ? "entities-proposed" : "entities");
   const organization = current.organization_id ? organizationNames.get(current.organization_id) : undefined;
   const custodian = current.custodian_id ? custodians.data?.find((item) => item.id === current.custodian_id) : undefined;
+  const eligibleRelationshipDefinitions = (relationshipDefinitions.data ?? []).filter((definition) => (
+    definition.source_entity_types.some((entityType) => entityType === current.entity_type)
+      && (definition.source_organization_categories === null
+        || definition.source_organization_categories.some((category) => category === current.organization_category))
+  ));
+  const selectedRelationshipType = eligibleRelationshipDefinitions.some((definition) => definition.key === relationshipType)
+    ? relationshipType
+    : eligibleRelationshipDefinitions[0]?.key ?? "";
+  const selectedRelationshipDefinition = eligibleRelationshipDefinitions.find(
+    (definition) => definition.key === selectedRelationshipType,
+  );
+  const eligibleRelationshipTargets = (relationshipTargets.data?.items ?? []).filter((candidate) => (
+    candidate.id !== current.id
+      && selectedRelationshipDefinition?.target_entity_types.some((entityType) => entityType === candidate.entity_type)
+  ));
 
   return (
     <div className="space-y-5">
@@ -130,6 +181,7 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
             <div className="flex flex-wrap items-center gap-2">
               <EntityStatusBadge status={current.status} />
               <EntityTypeLabel type={current.entity_type} />
+              {current.organization_category ? <OrganizationCategoryBadge category={current.organization_category} /> : null}
               {current.created_by_workflow_run_id ? <span className="inline-flex items-center gap-1 text-xs font-medium text-agent"><Bot className="size-3.5" aria-hidden="true" />Proposed by an agent</span> : null}
             </div>
             <CardTitle className="text-lg">{entityLabel(current)}</CardTitle>
@@ -144,6 +196,12 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
           ) : null}
         </CardHeader>
         <CardContent>
+          {current.organization_category === "LAW_FIRM" ? (
+            <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+              <p className="font-medium">Potential privilege-review signal</p>
+              <p className="mt-1 text-muted-foreground">This organization was identified as a law firm. That does not establish whom it represents or make any communication or document privileged.</p>
+            </div>
+          ) : null}
           {editing ? (
             <EntityEditForm
               entity={current}
@@ -164,13 +222,98 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
                   <dt className="font-medium text-muted-foreground">Organization</dt>
                   <dd>{current.organization_id ? <Link className="text-primary hover:underline" href={entityDetailHref(clientId, matterId, current.organization_id)}>{organization ?? "Organization"}</Link> : "—"}</dd>
                 </>
-              ) : null}
+              ) : (
+                <>
+                  <dt className="font-medium text-muted-foreground">Organization category</dt>
+                  <dd>{current.organization_category ? organizationCategoryLabel(current.organization_category) : "—"}</dd>
+                  <dt className="font-medium text-muted-foreground">Domains</dt>
+                  <dd>{current.domains?.length ? current.domains.map((domain) => domain.domain).join(", ") : "—"}</dd>
+                </>
+              )}
               <dt className="font-medium text-muted-foreground">Custodian</dt>
               <dd>{current.custodian_id ? custodian?.display_name ?? "Linked custodian" : "—"}</dd>
               <dt className="font-medium text-muted-foreground">Description</dt>
               <dd className="whitespace-pre-wrap">{current.description ?? "—"}</dd>
             </dl>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base"><Link2 className="size-4" aria-hidden="true" />Related</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">Matter-specific relationships connect people and organizations. They may improve review signals, but never establish privilege by themselves.</p>
+          {relationships.isPending ? <TableLoading />
+            : relationships.error ? <QueryError message={relationships.error.message} />
+            : relationships.data.length ? (
+              <ul className="divide-y rounded-lg border">
+                {relationships.data.map((relationship) => {
+                  const outbound = relationship.source.id === current.id;
+                  const other = outbound ? relationship.target : relationship.source;
+                  return (
+                    <li key={relationship.id} className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+                      <div>
+                        <p className="font-medium">{outbound ? relationship.forward_label : relationship.inverse_label}</p>
+                        <Link className="text-primary hover:underline" href={entityDetailHref(clientId, matterId, other.id)}>{other.display_name ?? other.email ?? "Entity"}</Link>
+                      </div>
+                      <EntityStatusBadge status={relationship.status} />
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : <p className="text-sm">No matter-specific relationships recorded.</p>}
+          {canManage && current.status === "CONFIRMED" && eligibleRelationshipDefinitions.length ? (
+            <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="relationship-type">Relationship type</Label>
+                  <Select
+                    value={selectedRelationshipType}
+                    onValueChange={(value) => {
+                      setRelationshipType(value);
+                      setRelationshipTargetId("");
+                    }}
+                  >
+                    <SelectTrigger id="relationship-type"><SelectValue placeholder="Select a relationship type" /></SelectTrigger>
+                    <SelectContent>
+                      {eligibleRelationshipDefinitions.map((definition) => (
+                        <SelectItem key={definition.key} value={definition.key}>{definition.forward_label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="related-entity">Related entity</Label>
+                  <Select value={relationshipTargetId} onValueChange={setRelationshipTargetId}>
+                    <SelectTrigger id="related-entity"><SelectValue placeholder="Select a confirmed entity" /></SelectTrigger>
+                    <SelectContent>
+                      {eligibleRelationshipTargets.map((candidate) => (
+                        <SelectItem key={candidate.id} value={candidate.id}>{entityLabel(candidate)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">
+                  {selectedRelationshipDefinition
+                    ? `Direction from this entity: ${selectedRelationshipDefinition.forward_label}.`
+                    : "Select a relationship type and entity."}
+                </p>
+                <Button
+                  disabled={!selectedRelationshipType || !relationshipTargetId || createRelationship.isPending}
+                  onClick={() => createRelationship.mutate({
+                    source_entity_id: current.id,
+                    target_entity_id: relationshipTargetId,
+                    relationship_type: selectedRelationshipType,
+                    status: "CONFIRMED",
+                  })}
+                >Add relationship</Button>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

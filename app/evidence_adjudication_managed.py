@@ -51,6 +51,22 @@ def _invocation_ids(db: Session, skill_run_id: uuid.UUID) -> tuple[uuid.UUID, ..
     )
 
 
+@dataclass(frozen=True)
+class PreparedCriterionAdjudicationModelCall:
+    stable_context: dict[str, Any]
+    dynamic_input: dict[str, Any]
+    application_schema: dict[str, Any]
+    provider_schema: dict[str, Any]
+    cache_identity: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NormalizedCriterionAdjudication:
+    adjudication: Any
+    decision: Any
+    adjustments: tuple[AdjudicationAdjustment, ...]
+
+
 @dataclass
 class ManagedCriterionAdjudicator:
     db: Session
@@ -105,28 +121,8 @@ class ManagedCriterionAdjudicator:
         packet: CriterionAdjudicationPacket,
         attempt: int,
     ) -> CriterionAdjudicationAttempt:
-        self._validate_context(plan, packet)
-        criterion = next(
-            value for value in self.catalog.criteria if value.criterion_key == packet.criterion_key
-        )
-        by_id = {value.observation_id: value for value in self.observations.observations}
-        evidence_packet = [by_id[value] for value in packet.observation_ids]
-        application_schema, provider_schema = criterion_adjudication_schemas(
-            criterion_key=packet.criterion_key,
-            observation_ids=list(packet.observation_ids),
-            provider=plan.role_binding.provider,
-        )
-        normalization = CriterionDecisionNormalizationCapture(
-            admitted_observation_ids=set(packet.observation_ids)
-        )
-
-        def validate(value: dict[str, Any]) -> None:
-            validate_criterion_adjudication(
-                value,
-                criterion_key=packet.criterion_key,
-                admitted_observation_ids=set(packet.observation_ids),
-            )
-
+        model_call = self.prepare_model_call(plan, packet)
+        normalization = CriterionDecisionNormalizationCapture(admitted_observation_ids=set(packet.observation_ids))
         _output, skill_run = await self.skill_runner(
             self.db,
             workflow=self.workflow,
@@ -134,23 +130,19 @@ class ManagedCriterionAdjudicator:
             skill_version=self.skill_version,
             scope_type="MATTER_DOCUMENT",
             scope_id=plan.matter_document_id,
-            stable_context={
-                "review_guidance": self.review_guidance,
-                "criterion": criterion.model_dump(mode="json"),
-            },
-            dynamic_input={
-                "evidence_packet": [value.model_dump(mode="json") for value in evidence_packet]
-            },
-            cache_identity={
-                "tenant_id": str(plan.tenant_id),
-                "matter_id": str(plan.matter_id),
-                "criterion_key": packet.criterion_key,
-                "skill_version_id": str(self.skill_version.id),
-            },
+            stable_context=model_call.stable_context,
+            dynamic_input=model_call.dynamic_input,
+            cache_identity=model_call.cache_identity,
             output_normalizers=(normalization,),
-            output_validators=(validate,),
-            output_schema=application_schema,
-            provider_output_schema=provider_schema,
+            output_validators=(
+                lambda value: validate_criterion_adjudication(
+                    value,
+                    criterion_key=packet.criterion_key,
+                    admitted_observation_ids=set(packet.observation_ids),
+                ),
+            ),
+            output_schema=model_call.application_schema,
+            provider_output_schema=model_call.provider_schema,
             limits=self.skill_version.limits,
             usage_job_type="MATTER_DEFINITION_EVIDENCE_ADJUDICATION_SHADOW",
             model=self.model if self.model is not None else self.resolved_model,
@@ -176,6 +168,58 @@ class ManagedCriterionAdjudicator:
             invocation_ids=_invocation_ids(self.db, skill_run.id),
             started_at=skill_run.started_at or now,
             completed_at=skill_run.completed_at or now,
+        )
+
+    def prepare_model_call(
+        self,
+        plan: CriterionAdjudicationPlan,
+        packet: CriterionAdjudicationPacket,
+    ) -> PreparedCriterionAdjudicationModelCall:
+        self._validate_context(plan, packet)
+        criterion = next(value for value in self.catalog.criteria if value.criterion_key == packet.criterion_key)
+        by_id = {value.observation_id: value for value in self.observations.observations}
+        evidence_packet = [by_id[value] for value in packet.observation_ids]
+        application_schema, provider_schema = criterion_adjudication_schemas(
+            criterion_key=packet.criterion_key,
+            observation_ids=list(packet.observation_ids),
+            provider=plan.role_binding.provider,
+        )
+        return PreparedCriterionAdjudicationModelCall(
+            stable_context={
+                "review_guidance": self.review_guidance,
+                "criterion": criterion.model_dump(mode="json"),
+            },
+            dynamic_input={"evidence_packet": [value.model_dump(mode="json") for value in evidence_packet]},
+            application_schema=application_schema,
+            provider_schema=provider_schema,
+            cache_identity={
+                "tenant_id": str(plan.tenant_id),
+                "matter_id": str(plan.matter_id),
+                "criterion_key": packet.criterion_key,
+                "skill_version_id": str(self.skill_version.id),
+            },
+        )
+
+    def normalize_model_output(
+        self,
+        plan: CriterionAdjudicationPlan,
+        packet: CriterionAdjudicationPacket,
+        raw_output: dict[str, Any],
+    ) -> NormalizedCriterionAdjudication:
+        self._validate_context(plan, packet)
+        normalization = CriterionDecisionNormalizationCapture(admitted_observation_ids=set(packet.observation_ids))
+        normalized = normalization(raw_output)
+        adjudication = validate_criterion_adjudication(
+            normalized,
+            criterion_key=packet.criterion_key,
+            admitted_observation_ids=set(packet.observation_ids),
+        )
+        decision = criterion_decision_from_adjudication(adjudication)
+        adjustments = tuple(AdjudicationAdjustment.model_validate(value) for value in normalization.adjustments)
+        return NormalizedCriterionAdjudication(
+            adjudication=adjudication,
+            decision=decision,
+            adjustments=adjustments,
         )
 
 

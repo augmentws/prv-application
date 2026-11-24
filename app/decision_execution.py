@@ -47,6 +47,10 @@ async def execute_decision_request(
             "questions": {
                 key: question.model_dump(mode="json") for key, question in request.questions.items()
             },
+            "evidence_bindings": {
+                key: binding.model_dump(mode="json")
+                for key, binding in request.evidence_bindings.items()
+            },
             "model_configuration_hash": model_configuration_hash,
         },
     )

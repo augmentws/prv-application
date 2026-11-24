@@ -125,10 +125,11 @@ export function CustodiansSection() {
           triggerLabel="Add documents to matter"
           disabled={!selectedCustodianIds.length || matters.isPending}
           selectionDescription={`Add documents associated with ${selectedCustodianIds.length.toLocaleString()} selected ${selectedCustodianIds.length === 1 ? "custodian" : "custodians"}.`}
-          onAdd={(matterId) => createImportJob(matterId, {
+          onAdd={(matterId, includeCompleteFamilies) => createImportJob(matterId, {
             source_collection_id: collectionId,
             selection: {
               mode: "QUERY",
+              include_complete_families: includeCompleteFamilies,
               q: null,
               custodian_ids: selectedCustodianIds,
               file_extensions: [],

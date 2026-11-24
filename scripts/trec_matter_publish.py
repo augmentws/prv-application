@@ -26,11 +26,14 @@ MAX_EXPLICIT_SELECTION = 25_000
 class CollectionIdentity:
     item_id: str
     source_item_id: str
+    family_id: str | None = None
 
 
 @dataclass(frozen=True)
-class SampledIdentity:
-    identity: CollectionIdentity
+class SampledFamily:
+    key: str
+    family_id: str | None
+    members: tuple[CollectionIdentity, ...]
     score: int
 
 
@@ -42,9 +45,13 @@ def _source_sha256(source: Path) -> str:
     return digest.hexdigest()
 
 
-def _sampling_score(seed: str, source_item_id: str) -> int:
-    digest = hashlib.sha256(seed.encode("utf-8") + b"\0" + source_item_id.encode("utf-8")).digest()
+def _sampling_score(seed: str, family_key: str) -> int:
+    digest = hashlib.sha256(seed.encode("utf-8") + b"\0" + family_key.encode("utf-8")).digest()
     return int.from_bytes(digest, "big")
+
+
+def _family_key(identity: CollectionIdentity) -> str:
+    return f"family:{identity.family_id}" if identity.family_id else f"item:{identity.item_id}"
 
 
 def iter_collection_identities(
@@ -62,9 +69,14 @@ def iter_collection_identities(
         if not items:
             break
         for item in items:
+            if "family_id" not in item:
+                raise RuntimeError(
+                    "Collection identity API does not expose family IDs; restart the updated backend before running"
+                )
             yield CollectionIdentity(
                 item_id=str(item["item_id"]),
                 source_item_id=str(item["source_item_id"]),
+                family_id=str(item["family_id"]) if item.get("family_id") else None,
             )
         next_cursor = page.get("next_after_source_item_id")
         if next_cursor is None:
@@ -93,25 +105,14 @@ def build_manifest(
         raise ValueError("Coded Qrels document IDs are not unique")
 
     coded_items: dict[str, CollectionIdentity] = {}
-    # Negative scores turn heapq into a bounded max-heap. The root is the
-    # current least-desirable (largest hash) member of the sample.
-    uncoded_heap: list[tuple[int, str, CollectionIdentity]] = []
+    families: dict[str, list[CollectionIdentity]] = {}
     collection_count = 0
-    uncoded_population_count = 0
     for identity in identities:
         collection_count += 1
+        families.setdefault(_family_key(identity), []).append(identity)
         key = identity.source_item_id.casefold()
         if key in coded_by_source_id:
             coded_items[key] = identity
-        else:
-            uncoded_population_count += 1
-            if uncoded_count:
-                score = _sampling_score(seed, identity.source_item_id)
-                candidate = (-score, identity.source_item_id, identity)
-                if len(uncoded_heap) < uncoded_count:
-                    heapq.heappush(uncoded_heap, candidate)
-                elif score < -uncoded_heap[0][0]:
-                    heapq.heapreplace(uncoded_heap, candidate)
         if collection_count % 50_000 == 0:
             progress(f"Scanned {collection_count:,} collection identities")
 
@@ -120,68 +121,122 @@ def build_manifest(
         preview = ", ".join(missing[:10])
         suffix = "" if len(missing) <= 10 else f" (and {len(missing) - 10:,} more)"
         raise ValueError(f"Collection is missing {len(missing):,} coded Topic {topic} documents: {preview}{suffix}")
+    coded_family_keys = {_family_key(identity) for identity in coded_items.values()}
+    coded_expanded = sorted(
+        (identity for family_key in coded_family_keys for identity in families[family_key]),
+        key=lambda identity: identity.source_item_id,
+    )
+    uncoded_families = {
+        family_key: tuple(sorted(members, key=lambda identity: identity.source_item_id))
+        for family_key, members in families.items()
+        if family_key not in coded_family_keys
+    }
+    uncoded_population_count = sum(len(members) for members in uncoded_families.values())
     if uncoded_population_count < uncoded_count:
         raise ValueError(
-            f"Collection has only {uncoded_population_count:,} uncoded Topic {topic} "
-            f"documents; {uncoded_count:,} were requested"
+            f"Collection has only {uncoded_population_count:,} documents outside the coded "
+            f"Topic {topic} families; approximately {uncoded_count:,} were requested"
         )
 
-    coded = sorted(
-        [(coded_items[key], row) for key, row in coded_by_source_id.items()],
-        key=lambda pair: pair[0].source_item_id,
-    )
-    sampled = sorted(
+    # Negative scores turn heapq into a bounded max-heap. Keeping at most the
+    # requested document count in families is sufficient because every family
+    # contains at least one document.
+    family_heap: list[tuple[int, str]] = []
+    if uncoded_count:
+        for family_key in uncoded_families:
+            score = _sampling_score(seed, family_key)
+            candidate = (-score, family_key)
+            if len(family_heap) < uncoded_count:
+                heapq.heappush(family_heap, candidate)
+            elif score < -family_heap[0][0]:
+                heapq.heapreplace(family_heap, candidate)
+    ranked_families = sorted(
         (
-            SampledIdentity(identity=identity, score=-negative_score)
-            for negative_score, _source_item_id, identity in uncoded_heap
+            SampledFamily(
+                key=family_key,
+                family_id=members[0].family_id,
+                members=members,
+                score=-negative_score,
+            )
+            for negative_score, family_key in family_heap
+            for members in [uncoded_families[family_key]]
         ),
-        key=lambda item: (item.score, item.identity.source_item_id),
+        key=lambda family: (family.score, family.key),
     )
-    selected_count = len(coded) + len(sampled)
+    sampled_families: list[SampledFamily] = []
+    sampled_document_count = 0
+    for family in ranked_families:
+        if sampled_document_count >= uncoded_count:
+            break
+        sampled_families.append(family)
+        sampled_document_count += len(family.members)
+
+    selected_count = len(coded_expanded) + sampled_document_count
     if selected_count > MAX_EXPLICIT_SELECTION:
         raise ValueError(
             f"Publication selects {selected_count:,} documents, exceeding the "
             f"{MAX_EXPLICIT_SELECTION:,}-document explicit-selection limit"
         )
 
-    items: list[dict[str, Any]] = [
-        {
+    items: list[dict[str, Any]] = []
+    for identity in coded_expanded:
+        judgment = coded_by_source_id.get(identity.source_item_id.casefold())
+        family_members = families[_family_key(identity)]
+        item: dict[str, Any] = {
             "collection_item_id": identity.item_id,
             "source_item_id": identity.source_item_id,
-            "partition": "coded",
-            "judgment": row.relevance,
+            "family_id": identity.family_id,
+            "family_member_count": len(family_members),
+            "partition": "coded" if judgment is not None else "coded_family_expansion",
         }
-        for identity, row in coded
-    ]
-    items.extend(
-        {
-            "collection_item_id": item.identity.item_id,
-            "source_item_id": item.identity.source_item_id,
-            "partition": "uncoded_random",
-            "random_rank": rank,
-            "random_score_sha256": f"{item.score:064x}",
-        }
-        for rank, item in enumerate(sampled, start=1)
-    )
+        if judgment is not None:
+            item["judgment"] = judgment.relevance
+        items.append(item)
+    for family_rank, family in enumerate(sampled_families, start=1):
+        for identity in family.members:
+            items.append(
+                {
+                    "collection_item_id": identity.item_id,
+                    "source_item_id": identity.source_item_id,
+                    "family_id": identity.family_id,
+                    "family_member_count": len(family.members),
+                    "partition": "uncoded_random_family",
+                    "random_family_rank": family_rank,
+                    "random_family_score_sha256": f"{family.score:064x}",
+                }
+            )
+    coded_seed_count = len(coded_items)
+    coded_expanded_count = len(coded_expanded)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "topic": topic,
         "collection_id": collection_id,
         "matter_id": matter_id,
         "qrels": {
             "source": str(source),
             "sha256": _source_sha256(source),
-            "coded_count": len(coded),
+            "coded_count": coded_seed_count,
             "relevant_count": sum(row.relevance == 1 for row in qrels),
             "not_relevant_count": sum(row.relevance == 0 for row in qrels),
             "unassessed_rows": skipped[topic],
         },
+        "family_expansion": {
+            "policy": "EXPAND_COMPLETE_FAMILIES_IN_COLLECTION",
+            "coded_seed_document_count": coded_seed_count,
+            "coded_family_count": len(coded_family_keys),
+            "coded_added_family_document_count": coded_expanded_count - coded_seed_count,
+            "coded_expanded_document_count": coded_expanded_count,
+        },
         "sampling": {
-            "algorithm": "sha256(seed + NUL + source_item_id), lowest hashes",
+            "algorithm": "sha256(seed + NUL + family_key), lowest family hashes until document target is met",
             "seed": seed,
             "collection_document_count": collection_count,
             "uncoded_population_count": uncoded_population_count,
-            "uncoded_selected_count": len(sampled),
+            "eligible_uncoded_family_count": len(uncoded_families),
+            "uncoded_target_document_count": uncoded_count,
+            "uncoded_selected_family_count": len(sampled_families),
+            "uncoded_selected_count": sampled_document_count,
+            "uncoded_target_overshoot": sampled_document_count - uncoded_count,
         },
         "selected_count": selected_count,
         "items": items,
@@ -207,6 +262,10 @@ def publish_manifest(
 ) -> dict[str, Any]:
     topic = manifest["topic"]
     counts = manifest["qrels"]
+    coded_expanded_count = manifest.get("family_expansion", {}).get(
+        "coded_expanded_document_count",
+        counts["coded_count"],
+    )
     uncoded_count = manifest["sampling"]["uncoded_selected_count"]
     return api.request(
         CREATE_DOCUMENT_IMPORT,
@@ -215,11 +274,15 @@ def publish_manifest(
             "source_collection_id": manifest["collection_id"],
             "selection": {
                 "mode": "EXPLICIT",
+                # The manifest already freezes complete families. Re-expansion
+                # would make the published population differ from its hash.
+                "include_complete_families": False,
                 "item_ids": [item["collection_item_id"] for item in manifest["items"]],
             },
             "selection_summary": (
-                f"TREC Topic {topic}: {counts['coded_count']:,} coded documents plus "
-                f"{uncoded_count:,} deterministic uncoded documents; "
+                f"TREC Topic {topic}: {counts['coded_count']:,} coded documents expanded to "
+                f"{coded_expanded_count:,} family-complete documents plus {uncoded_count:,} "
+                f"deterministic uncoded family documents; "
                 f"manifest sha256={manifest_sha256}"
             ),
         },
@@ -229,15 +292,20 @@ def publish_manifest(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Publish all coded documents for one TREC topic plus a deterministic "
-            "random sample of uncoded collection documents into a matter."
+            "Expand all coded documents for one TREC topic to complete families, then add "
+            "a deterministic random sample of whole uncoded families into a matter."
         )
     )
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--topic", type=int, default=304)
     parser.add_argument("--matter-id", required=True)
     parser.add_argument("--collection-id", required=True)
-    parser.add_argument("--uncoded-count", type=int, default=10_000)
+    parser.add_argument(
+        "--uncoded-count",
+        type=int,
+        default=10_000,
+        help="Approximate additional document target; whole families may make the result slightly larger.",
+    )
     parser.add_argument("--seed", default="trec-topic-304-uncoded-v1")
     parser.add_argument("--manifest-out", type=Path, required=True)
     parser.add_argument(
@@ -298,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 "manifest_sha256": manifest_sha256,
                 "topic": args.topic,
                 "coded_count": manifest["qrels"]["coded_count"],
+                "coded_expanded_count": manifest["family_expansion"]["coded_expanded_document_count"],
                 "uncoded_count": manifest["sampling"]["uncoded_selected_count"],
                 "selected_count": manifest["selected_count"],
                 "dry_run": args.dry_run,

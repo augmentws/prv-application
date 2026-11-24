@@ -244,9 +244,7 @@ def _record_tool(
         action_request = _linked_action_request(db, run, ctx.tool_call_id)
         if action_request is not None:
             decision = db.scalar(
-                select(AgentActionDecision).where(
-                    AgentActionDecision.action_request_id == action_request.id
-                )
+                select(AgentActionDecision).where(AgentActionDecision.action_request_id == action_request.id)
             )
             if decision is None or decision.decision != "APPROVE" or action_request.status != "APPROVED":
                 raise PermissionError("Agent action does not have a valid approval")
@@ -271,9 +269,7 @@ def _record_tool(
             action_request = _linked_action_request(db, run, ctx.tool_call_id)
             if action_request is not None:
                 decision = db.scalar(
-                    select(AgentActionDecision).where(
-                        AgentActionDecision.action_request_id == action_request.id
-                    )
+                    select(AgentActionDecision).where(AgentActionDecision.action_request_id == action_request.id)
                 )
                 if decision is None or decision.decision != "APPROVE" or action_request.status != "APPROVED":
                     raise PermissionError("Agent action approval is no longer valid")
@@ -350,7 +346,9 @@ def read_matter_definition(
     return _record_tool(
         ctx,
         tool_key="matter_definition.read",
-        arguments={"guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None},
+        arguments={
+            "guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None
+        },
         operation=operation,
     )
 
@@ -386,9 +384,7 @@ def list_editable_metadata(ctx: RunContext[AgentRuntimeDeps]) -> dict[str, Any]:
     return _record_tool(ctx, tool_key="matter_metadata.list_editable", arguments={}, operation=operation)
 
 
-def compare_metadata(
-    ctx: RunContext[AgentRuntimeDeps], proposed_field_keys: list[str]
-) -> dict[str, Any]:
+def compare_metadata(ctx: RunContext[AgentRuntimeDeps], proposed_field_keys: list[str]) -> dict[str, Any]:
     arguments = {"proposed_field_keys": proposed_field_keys}
 
     def operation(db, matter: Matter, _user: User, _run: AgentRun) -> dict[str, Any]:
@@ -415,9 +411,7 @@ def compare_metadata(
     return _record_tool(ctx, tool_key="matter_metadata.compare", arguments=arguments, operation=operation)
 
 
-def validate_matter_definition(
-    ctx: RunContext[AgentRuntimeDeps], referenced_field_keys: list[str]
-) -> dict[str, Any]:
+def validate_matter_definition(ctx: RunContext[AgentRuntimeDeps], referenced_field_keys: list[str]) -> dict[str, Any]:
     arguments = {"referenced_field_keys": referenced_field_keys}
 
     def operation(db, matter: Matter, _user: User, _run: AgentRun) -> dict[str, Any]:
@@ -634,11 +628,7 @@ def update_matter_metadata_enum_value(
     """Update an enum value's display label or description; its stable key is immutable."""
     if not ctx.tool_call_approved:
         raise PermissionError("Updating an enum value requires explicit user approval")
-    changes = {
-        name: value
-        for name, value in {"label": label, "description": description}.items()
-        if value is not None
-    }
+    changes = {name: value for name, value in {"label": label, "description": description}.items() if value is not None}
     payload = MetadataEnumValueUpdate(**changes)
     arguments = {
         "definition_key": definition_key,
@@ -901,9 +891,7 @@ def search_batch_summaries(
                 )
                 scope_response = execute_matter_search(
                     matter,
-                    frozen_search_scope.model_copy(
-                        update={"facets": [], "offset": 0, "size": scope_limit}
-                    ),
+                    frozen_search_scope.model_copy(update={"facets": [], "offset": 0, "size": scope_limit}),
                     db=db,
                     settings=get_settings(),
                 )
@@ -1029,6 +1017,7 @@ def search_batch_summaries(
         unavailable_summary_count = 0
         unavailable_document_text_count = 0
         settings = get_settings()
+        db.commit()
         for hit in new_hits:
             document = documents.get(hit.document_id)
             source = None
@@ -1076,9 +1065,8 @@ def search_batch_summaries(
                         if assessment is not None and assessment.review_batch_id is not None
                         else None
                     )
-                    reused_from_another_batch = (
-                        batch is not None
-                        and (assessment is None or assessment.review_batch_id != batch.id)
+                    reused_from_another_batch = batch is not None and (
+                        assessment is None or assessment.review_batch_id != batch.id
                     )
                 except (ValueError, PermissionError, json.JSONDecodeError, TypeError):
                     unavailable_summary_count += 1
@@ -1237,9 +1225,7 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         if conversation is None or turn is None or version is None:
             raise ValueError("Agent run configuration is incomplete")
         assignments = list(
-            db.scalars(
-                select(AgentVersionTool).where(AgentVersionTool.agent_definition_version_id == version.id)
-            )
+            db.scalars(select(AgentVersionTool).where(AgentVersionTool.agent_definition_version_id == version.id))
         )
         allowed_tool_keys = frozenset(assignment.tool_key for assignment in assignments) & RUNTIME_TOOL_KEYS
         parent = db.get(AgentRun, run.parent_run_id) if run.parent_run_id else None
@@ -1250,9 +1236,7 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
                 message_history = history_source.message_history
                 break
             history_source = (
-                db.get(AgentRun, history_source.parent_run_id)
-                if history_source.parent_run_id is not None
-                else None
+                db.get(AgentRun, history_source.parent_run_id) if history_source.parent_run_id is not None else None
             )
         user_prompt = None
         if run.sequence == 1:
@@ -1270,17 +1254,13 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         if run.deferred_from_run_id:
             requests = list(
                 db.scalars(
-                    select(AgentActionRequest).where(
-                        AgentActionRequest.agent_run_id == run.deferred_from_run_id
-                    )
+                    select(AgentActionRequest).where(AgentActionRequest.agent_run_id == run.deferred_from_run_id)
                 )
             )
             deferred_decisions = {}
             for request in requests:
                 decision = db.scalar(
-                    select(AgentActionDecision).where(
-                        AgentActionDecision.action_request_id == request.id
-                    )
+                    select(AgentActionDecision).where(AgentActionDecision.action_request_id == request.id)
                 )
                 if decision is None:
                     raise ValueError("Agent action decisions are incomplete")
@@ -1327,16 +1307,8 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
                     if conversation.workflow_type == "MATTER_DEFINITION_SETUP"
                     else []
                 ),
-                *(
-                    [BATCH_CHAT_FLOW_INSTRUCTIONS]
-                    if conversation.workflow_type == "BATCH_CHAT"
-                    else []
-                ),
-                *(
-                    [SEARCH_CHAT_FLOW_INSTRUCTIONS]
-                    if conversation.workflow_type == "SEARCH_CHAT"
-                    else []
-                ),
+                *([BATCH_CHAT_FLOW_INSTRUCTIONS] if conversation.workflow_type == "BATCH_CHAT" else []),
+                *([SEARCH_CHAT_FLOW_INSTRUCTIONS] if conversation.workflow_type == "SEARCH_CHAT" else []),
             ],
             model_id=version.model_key,
             model_settings=version.model_policy,
@@ -1485,15 +1457,15 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                 raise ValueError("Waiting agent run did not produce an approval request")
             for action in outcome.actions:
                 action_request = AgentActionRequest(
-                        conversation_id=run.conversation_id,
-                        turn_id=run.turn_id,
-                        agent_run_id=run.id,
-                        tool_call_id=action["tool_call_id"],
-                        tool_key=action["tool_key"],
-                        arguments=action["arguments"],
-                        summary=action["summary"],
-                        status="PENDING",
-                    )
+                    conversation_id=run.conversation_id,
+                    turn_id=run.turn_id,
+                    agent_run_id=run.id,
+                    tool_call_id=action["tool_call_id"],
+                    tool_key=action["tool_key"],
+                    arguments=action["arguments"],
+                    summary=action["summary"],
+                    status="PENDING",
+                )
                 db.add(action_request)
                 action_requests.append(action_request)
             turn.status = "WAITING_APPROVAL"
@@ -1501,20 +1473,18 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
         else:
             message_sequence = (
                 db.scalar(
-                    select(func.max(AgentMessage.sequence)).where(
-                        AgentMessage.conversation_id == conversation.id
-                    )
+                    select(func.max(AgentMessage.sequence)).where(AgentMessage.conversation_id == conversation.id)
                 )
                 or 0
             ) + 1
             assistant_message = AgentMessage(
-                    conversation_id=conversation.id,
-                    turn_id=turn.id,
-                    sequence=message_sequence,
-                    role="ASSISTANT",
-                    content=outcome.output_text or "",
-                    agent_run_id=run.id,
-                )
+                conversation_id=conversation.id,
+                turn_id=turn.id,
+                sequence=message_sequence,
+                role="ASSISTANT",
+                content=outcome.output_text or "",
+                agent_run_id=run.id,
+            )
             db.add(assistant_message)
             turn.status = "COMPLETED"
             turn.completed_at = utcnow()

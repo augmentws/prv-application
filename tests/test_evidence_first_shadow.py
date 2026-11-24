@@ -3,21 +3,37 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+
+import pytest
 
 from app.artifact_gateway import WorkflowArtifactReference
 from app.document_evidence import build_document_map_plan, segment_paragraphs
 from app.evidence_first_artifacts import (
+    ANALYSIS_EVALUATION_PLAN_SCHEMA_VERSION,
     AnalysisRoleBinding,
     AnalysisRoleBudget,
     CompactedEvidenceObservations,
     EvidenceEvaluationPlan,
     EvidenceExtractionUnitResult,
     build_evidence_evaluation_plan,
+    compact_observation_results,
+    evaluation_plan_bytes,
+    merge_family_observation_results,
     observation_fragment_attempt_derivation_key,
     observation_fragment_derivation_key,
+    scope_family_observation_results,
 )
 from app.evidence_first_contracts import EvidenceObservation, observation_id
-from app.evidence_first_shadow import compact_evidence_shadow, execute_evidence_shadow, execute_evidence_unit
+from app.evidence_first_launcher import uses_privilege_family_evidence_context
+from app.evidence_first_shadow import (
+    WorkflowEvidenceShadowArtifactRepository,
+    compact_evidence_shadow,
+    execute_evidence_shadow,
+    execute_evidence_unit,
+)
+from app.model_execution import content_hash
+from app.privilege_evidence_context import PRIVILEGE_FAMILY_EVIDENCE_MODE
 from artifact_service.workflow_artifact_types import ArtifactType
 
 
@@ -122,6 +138,153 @@ def _unit_result(
     )
 
 
+def _member_plan(document_int: int, source_hash_character: str) -> EvidenceEvaluationPlan:
+    base = _plan()
+    payload = base.model_dump(mode="json", exclude={"plan_hash"})
+    payload.update(
+        matter_document_id=str(uuid.UUID(int=document_int)),
+        collection_item_id=str(uuid.UUID(int=document_int + 100)),
+        source_artifact_id=str(uuid.UUID(int=document_int + 200)),
+        source_content_hash=_hash(source_hash_character),
+    )
+    return EvidenceEvaluationPlan(**payload, plan_hash=content_hash(payload))
+
+
+def _with_scaled_role_budget(
+    plan: EvidenceEvaluationPlan,
+    *,
+    multiplier: int,
+) -> EvidenceEvaluationPlan:
+    payload = plan.model_dump(mode="json", exclude={"plan_hash"})
+    for budget in payload["role_budgets"]:
+        for key in (
+            "max_requests",
+            "repair_request_reserve",
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_elapsed_seconds",
+        ):
+            budget[key] *= multiplier
+    return EvidenceEvaluationPlan(**payload, plan_hash=content_hash(payload))
+
+
+def test_family_observations_merge_full_member_coverage_and_namespace_citations() -> None:
+    first = _member_plan(20, "a")
+    second = _with_scaled_role_budget(_member_plan(21, "b"), multiplier=2)
+    first_compacted = compact_observation_results(
+        first,
+        [_unit_result(first, ordinal, attempt=1) for ordinal in range(1, len(first.extraction_units) + 1)],
+    )
+    second_compacted = compact_observation_results(
+        second,
+        [_unit_result(second, ordinal, attempt=1) for ordinal in range(1, len(second.extraction_units) + 1)],
+    )
+
+    family_plan, family_observations = merge_family_observation_results(
+        [(second, second_compacted), (first, first_compacted)]
+    )
+
+    assert family_observations.evidence_complete is True
+    assert len(family_plan.extraction_units) == (
+        len(first.extraction_units) + len(second.extraction_units)
+    )
+    assert len(family_observations.selected_attempts) == len(family_plan.extraction_units)
+    assert len({value.unit_id for value in family_plan.extraction_units}) == len(
+        family_plan.extraction_units
+    )
+    assert {
+        citation_id.split(":", 2)[1]
+        for observation in family_observations.observations
+        for citation_id in observation.citation_ids
+    } == {str(first.matter_document_id), str(second.matter_document_id)}
+    assert family_plan.role_budgets == (
+        AnalysisRoleBudget(
+            role_key="evidence_extraction",
+            max_requests=(
+                first.role_budgets[0].max_requests + second.role_budgets[0].max_requests
+            ),
+            repair_request_reserve=(
+                first.role_budgets[0].repair_request_reserve
+                + second.role_budgets[0].repair_request_reserve
+            ),
+            max_input_tokens=(
+                first.role_budgets[0].max_input_tokens
+                + second.role_budgets[0].max_input_tokens
+            ),
+            max_output_tokens=(
+                first.role_budgets[0].max_output_tokens
+                + second.role_budgets[0].max_output_tokens
+            ),
+            max_elapsed_seconds=(
+                first.role_budgets[0].max_elapsed_seconds
+                + second.role_budgets[0].max_elapsed_seconds
+            ),
+        ),
+    )
+
+
+def test_family_observations_scope_adjudication_to_one_document() -> None:
+    first = _member_plan(24, "e")
+    second = _member_plan(25, "f")
+    first_compacted = compact_observation_results(
+        first,
+        [_unit_result(first, ordinal, attempt=1) for ordinal in range(1, len(first.extraction_units) + 1)],
+    )
+    second_compacted = compact_observation_results(
+        second,
+        [_unit_result(second, ordinal, attempt=1) for ordinal in range(1, len(second.extraction_units) + 1)],
+    )
+    family_plan, family_observations = merge_family_observation_results(
+        [(first, first_compacted), (second, second_compacted)]
+    )
+
+    scoped = scope_family_observation_results(
+        family_plan,
+        family_observations,
+        target_document_id=second.matter_document_id,
+    )
+
+    prefix = f"document:{second.matter_document_id}:"
+    assert scoped.evidence_complete is True
+    assert len(scoped.selected_attempts) == len(second.extraction_units)
+    assert len(scoped.observations) == len(second_compacted.observations)
+    assert all(
+        any(citation_id.startswith(prefix) for citation_id in observation.citation_ids)
+        for observation in scoped.observations
+    )
+    assert scoped.result_hash != family_observations.result_hash
+
+
+def test_family_observations_reject_different_stable_contracts() -> None:
+    first = _member_plan(22, "c")
+    second_payload = _member_plan(23, "d").model_dump(mode="json", exclude={"plan_hash"})
+    second_payload["criterion_catalog_hash"] = _hash("9")
+    second = EvidenceEvaluationPlan(
+        **second_payload,
+        plan_hash=content_hash(second_payload),
+    )
+    first_compacted = compact_observation_results(
+        first,
+        [_unit_result(first, ordinal, attempt=1) for ordinal in range(1, len(first.extraction_units) + 1)],
+    )
+    second_compacted = compact_observation_results(
+        second,
+        [_unit_result(second, ordinal, attempt=1) for ordinal in range(1, len(second.extraction_units) + 1)],
+    )
+
+    with pytest.raises(ValueError, match="do not share one frozen assessment contract"):
+        merge_family_observation_results(
+            [(first, first_compacted), (second, second_compacted)]
+        )
+
+
+def test_privilege_family_mode_is_exact_and_unknown_modes_fail_closed() -> None:
+    assert uses_privilege_family_evidence_context(PRIVILEGE_FAMILY_EVIDENCE_MODE) is True
+    assert uses_privilege_family_evidence_context(None) is False
+    with pytest.raises(ValueError, match="Unsupported privilege evidence execution mode"):
+        uses_privilege_family_evidence_context("PRIVILEGE_EVIDENCE_V2")
+
+
 class MemoryShadowRepository:
     def __init__(self) -> None:
         self._next_id = 100
@@ -221,6 +384,47 @@ def test_shadow_execution_reuses_completed_unit_attempts_on_restart() -> None:
     assert second.executed_unit_ids == ()
     assert second.reused_unit_ids == tuple(unit.unit_id for unit in plan.extraction_units)
     assert second.compacted.result_hash == first.compacted.result_hash
+
+
+def test_workflow_repository_reuses_plan_created_by_another_run(monkeypatch) -> None:
+    plan = _plan()
+    content = evaluation_plan_bytes(plan)
+    original_run_id = uuid.uuid4()
+    reference = WorkflowArtifactReference(
+        artifact_id=uuid.uuid4(),
+        tenant_id=plan.tenant_id,
+        client_id=plan.client_id,
+        core_scope_kind="MATTER",
+        core_scope_id=plan.matter_id,
+        artifact_type=ArtifactType.ANALYSIS_EVALUATION_PLAN,
+        schema_version=ANALYSIS_EVALUATION_PLAN_SCHEMA_VERSION,
+        derivation_key=plan.plan_hash,
+        content_hash=sha256(content).hexdigest(),
+        media_type="application/json",
+        byte_length=len(content),
+        producer_kind="CORE",
+        producer_run_id=original_run_id,
+        metadata={},
+        created_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        "app.evidence_first_shadow.find_workflow_artifact_reference",
+        lambda **_kwargs: reference,
+    )
+
+    def unexpected_store(*_args, **_kwargs):
+        raise AssertionError("an exact artifact must be reused")
+
+    monkeypatch.setattr(
+        "app.evidence_first_shadow.store_evaluation_plan_artifact",
+        unexpected_store,
+    )
+    repository = WorkflowEvidenceShadowArtifactRepository(
+        actor_user_id=uuid.uuid4(),
+        producer_run_id=uuid.uuid4(),
+    )
+
+    assert repository.persist_plan(plan) == reference
 
 
 def test_independent_unit_execution_compacts_only_after_all_units_arrive() -> None:

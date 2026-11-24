@@ -14,6 +14,7 @@ from app.model_execution import (
     apply_explicit_provider_cache,
     assemble_structured_prompt,
     execute_structured_model,
+    provider_compatible_model_settings,
     run_model,
     validate_structured_output,
 )
@@ -40,6 +41,20 @@ def request_for(document: str) -> StructuredModelRequest:
         cache_policy={"enabled": True, "explicit_boundary": True, "ttl": "5m"},
         cache_identity={"tenant_id": "tenant", "matter_id": "matter", "skill_version": 1},
     )
+
+
+def test_openai_model_settings_drop_unsupported_temperature() -> None:
+    assert provider_compatible_model_settings(
+        {"temperature": 0, "openai_reasoning_effort": "none"},
+        resolved_model="openai:gpt-6-luna",
+    ) == {"openai_reasoning_effort": "none"}
+
+
+def test_non_openai_model_settings_preserve_temperature() -> None:
+    assert provider_compatible_model_settings(
+        {"temperature": 0},
+        resolved_model="google:gemini-3.8-flash",
+    ) == {"temperature": 0}
 
 
 def test_prompt_cache_prefix_and_fingerprint_exclude_document_values() -> None:
@@ -161,7 +176,39 @@ def test_gemini_admission_schema_removes_unsupported_constraints_but_preserves_p
     assert admitted["properties"]["value"]["anyOf"]
     assert "maxItems" not in admitted["properties"]["items"]
     assert "maxProperties" not in admitted
-    assert provider_output_schema(schema, provider="openai") is schema
+
+
+def test_openai_admission_schema_is_strict_without_mutating_application_schema() -> None:
+    schema = {
+        "$defs": {
+            "item": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                },
+                "required": ["value"],
+                "additionalProperties": False,
+            }
+        },
+        "type": "object",
+        "properties": {
+            "observations": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/item"},
+            }
+        },
+        "additionalProperties": False,
+    }
+
+    admitted = provider_output_schema(schema, provider="openai")
+
+    assert admitted is not schema
+    assert admitted["required"] == ["observations"]
+    assert admitted["additionalProperties"] is False
+    assert admitted["$defs"]["item"]["required"] == ["value", "note"]
+    assert schema.get("required") is None
+    assert schema["$defs"]["item"]["required"] == ["value"]
 
 
 def test_structured_executor_returns_invocation_telemetry() -> None:

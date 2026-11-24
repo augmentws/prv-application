@@ -246,9 +246,12 @@ export function DocumentsSection() {
           triggerLabel="Add all matching"
           disabled={!searchResults.data?.total || matters.isPending}
           selectionDescription={`Add all ${(searchResults.data?.total ?? 0).toLocaleString()} documents matching the current search and filters.`}
-          onAdd={(matterId) => createImportJob(matterId, {
+          onAdd={(matterId, includeCompleteFamilies) => createImportJob(matterId, {
             source_collection_id: collectionId,
-            selection: toImportSelection(filters),
+            selection: {
+              ...toImportSelection(filters),
+              include_complete_families: includeCompleteFamilies,
+            },
             selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
           })}
         />

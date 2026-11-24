@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Any
 
 from sqlalchemy import select
@@ -13,9 +14,12 @@ from sqlalchemy.orm import Session
 from app.analysis_input_manifests import AnalysisInputManifestError, AnalysisInputManifestReader
 from app.analysis_task_evidence import (
     EVIDENCE_LOCALIZATION_VERSION,
+    INLINE_EVIDENCE_LOCALIZATION_VERSION,
     build_conditional_evidence_questions,
+    build_inline_evidence_questions,
     collect_conditional_evidence,
     primary_decision_answers,
+    select_evidence_plans,
     select_evidence_question_keys,
 )
 from app.analysis_tasks import (
@@ -26,14 +30,15 @@ from app.analysis_tasks import (
 )
 from app.artifact_gateway import TextSourceReference, get_preferred_text_source, read_text_source
 from app.config import Settings, get_settings
-from app.decision_engine import DecisionRequest
+from app.database_work import WorkerDatabaseLease
+from app.decision_engine import DecisionEngineProviderError, DecisionEvidenceBinding, DecisionRequest
 from app.decision_execution import execute_decision_request
 from app.decision_policy import evaluate_decision_policy
 from app.decision_specifications import DecisionSpecification
 from app.document_evidence import segment_paragraphs
 from app.document_metadata import event_value, value_columns
 from app.execution_accounting import ProviderUsageContext, persist_model_invocations
-from app.jev_decision_engine import get_shared_decision_engine_registry
+from app.jev_decision_engine import get_shared_decision_engine_registry, planned_jev_request_count
 from app.models import (
     AnalysisInputManifest,
     DocumentMetadataCurrent,
@@ -106,11 +111,7 @@ def materialize_decision_recommendations(
         existing_values = seen[definition.id]
         if raw_value in existing_values:
             continue
-        if (
-            definition.cardinality == "SINGLE"
-            and existing_values
-            and existing_values[0] != raw_value
-        ):
+        if definition.cardinality == "SINGLE" and existing_values and existing_values[0] != raw_value:
             raise MatterAnalysisTaskConflict(
                 f"Decision policy produced conflicting values for metadata field: {definition_key}"
             )
@@ -167,10 +168,7 @@ def _document_metadata_state(db: Session, document: MatterDocument) -> dict[str,
     for current, definition in rows:
         grouped[definition.key].append(event_value(current))
         cardinality[definition.key] = definition.cardinality
-    return {
-        key: values if cardinality[key] == "MULTIPLE" else values[0]
-        for key, values in grouped.items()
-    }
+    return {key: values if cardinality[key] == "MULTIPLE" else values[0] for key, values in grouped.items()}
 
 
 def _state_path_exists(state: Any, path: str) -> bool:
@@ -232,9 +230,7 @@ def _runtime_decision_context(decision_context: dict[str, Any]) -> dict[str, Any
     """
 
     runtime_context = copy.deepcopy(decision_context)
-    has_structured_context = any(
-        bool(runtime_context.get(key)) for key in _STRUCTURED_DECISION_CONTEXT_KEYS
-    )
+    has_structured_context = any(bool(runtime_context.get(key)) for key in _STRUCTURED_DECISION_CONTEXT_KEYS)
     if has_structured_context and runtime_context.get("source_material"):
         runtime_context.pop("source_material", None)
     return runtime_context
@@ -244,6 +240,7 @@ def _classification_state(
     state: dict[str, Any],
     *,
     required_paths: list[str],
+    preserve_paragraphs: bool = False,
 ) -> dict[str, Any]:
     """Avoid sending two equivalent representations of the document to classification."""
 
@@ -253,7 +250,7 @@ def _classification_state(
         return projected
     required = set(required_paths)
     requires_text = "document.text" in required
-    requires_paragraphs = "document.paragraphs" in required
+    requires_paragraphs = "document.paragraphs" in required or preserve_paragraphs
     if requires_text and not requires_paragraphs:
         document.pop("paragraphs", None)
     elif requires_paragraphs and not requires_text:
@@ -377,6 +374,7 @@ def execute_analysis_task_document(
     complete_run: bool,
     settings: Settings | None = None,
     registry=None,
+    database_lease: WorkerDatabaseLease | None = None,
 ) -> ReviewDecisionResult:
     settings = settings or get_settings()
     workflow = db.get(WorkflowRun, workflow_run_id)
@@ -385,9 +383,7 @@ def execute_analysis_task_document(
         MATTER_ANALYSIS_TASK_BATCH_SPEC.key,
     }:
         raise MatterAnalysisTaskConflict("Analysis task workflow not found")
-    review_run = db.scalar(
-        select(ReviewBatchRun).where(ReviewBatchRun.workflow_run_record_id == workflow.id)
-    )
+    review_run = db.scalar(select(ReviewBatchRun).where(ReviewBatchRun.workflow_run_record_id == workflow.id))
     if review_run is None:
         raise MatterAnalysisTaskConflict("Analysis task run provenance is incomplete")
     run_document = db.get(ReviewBatchRunDocument, (review_run.id, matter_document_id))
@@ -423,10 +419,7 @@ def execute_analysis_task_document(
     role = workflow.binding_snapshot.get("decision_evaluation") or {}
     skill_version_id = role.get("skill_definition_version_id")
     skill_version = db.get(SkillDefinitionVersion, uuid.UUID(skill_version_id)) if skill_version_id else None
-    if any(
-        record is None
-        for record in (task_version, document, matter, review_run, step, skill_version)
-    ):
+    if any(record is None for record in (task_version, document, matter, review_run, step, skill_version)):
         raise MatterAnalysisTaskConflict("Analysis task workflow provenance is incomplete")
     assert task_version is not None
     assert document is not None
@@ -452,16 +445,19 @@ def execute_analysis_task_document(
             or manifest.scope_id != matter.id
             or manifest.input_contract.get("key") != "question-answering.population"
             or manifest.input_contract.get("version") != 1
-            or manifest.input_contract.get("resolver_version")
-            != "question-answering-population-resolver-v1"
+            or manifest.input_contract.get("resolver_version") != "question-answering-population-resolver-v1"
             or ordinal is None
         ):
             raise MatterAnalysisTaskConflict("Whole-matter input manifest provenance is invalid")
+        # The manifest reader may fetch an artifact over HTTP/S3.  Release the
+        # relational transaction before waiting on that external service.
+        db.commit()
         try:
-            row = AnalysisInputManifestReader(
-                manifest,
-                actor_user_id=workflow.initiated_by_user_id,
-            ).rows(ordinal - 1, 1)[0]
+            with database_lease.suspended() if database_lease is not None else nullcontext():
+                row = AnalysisInputManifestReader(
+                    manifest,
+                    actor_user_id=workflow.initiated_by_user_id,
+                ).rows(ordinal - 1, 1)[0]
         except (AnalysisInputManifestError, IndexError) as exc:
             raise MatterAnalysisTaskConflict("Whole-matter input manifest is unreadable") from exc
         if row["matter_document_id"] != str(document.id):
@@ -473,29 +469,34 @@ def execute_analysis_task_document(
         frozen_source = row["resolved_inputs"]["text_source"]
         source_artifact_id = uuid.UUID(row["source_artifact_id"])
         source_content_hash = row["source_content_hash"]
-        source_text = read_text_source(
-            TextSourceReference(
-                artifact_id=source_artifact_id,
-                role=frozen_source["role"],
-                media_type=frozen_source["media_type"],
-                original_filename=frozen_source["original_filename"],
-                content_hash=source_content_hash,
-                byte_length=int(frozen_source["byte_length"]),
-            ),
-            record_type=frozen_source["record_type"],
-            actor_user_id=workflow.initiated_by_user_id,
-            tenant_id=workflow.tenant_id,
-            client_id=workflow.client_id,
-        )
+        with database_lease.suspended() if database_lease is not None else nullcontext():
+            source_text = read_text_source(
+                TextSourceReference(
+                    artifact_id=source_artifact_id,
+                    role=frozen_source["role"],
+                    media_type=frozen_source["media_type"],
+                    original_filename=frozen_source["original_filename"],
+                    content_hash=source_content_hash,
+                    byte_length=int(frozen_source["byte_length"]),
+                ),
+                record_type=frozen_source["record_type"],
+                actor_user_id=workflow.initiated_by_user_id,
+                tenant_id=workflow.tenant_id,
+                client_id=workflow.client_id,
+            )
         if source_text is None:
             raise MatterAnalysisTaskConflict("The pinned text source has no faithful text")
     else:
-        source = get_preferred_text_source(
-            collection_item_id=document.collection_item_id,
-            actor_user_id=workflow.initiated_by_user_id,
-            tenant_id=workflow.tenant_id,
-            client_id=workflow.client_id,
-        )
+        # Artifact resolution is remote in split deployments and must never hold
+        # a PostgreSQL transaction for the duration of the request.
+        db.commit()
+        with database_lease.suspended() if database_lease is not None else nullcontext():
+            source = get_preferred_text_source(
+                collection_item_id=document.collection_item_id,
+                actor_user_id=workflow.initiated_by_user_id,
+                tenant_id=workflow.tenant_id,
+                client_id=workflow.client_id,
+            )
         if source is None:
             raise MatterAnalysisTaskConflict("Document has no faithful text source")
         source_artifact_id = source.artifact_id
@@ -522,14 +523,74 @@ def execute_analysis_task_document(
         path for path in specification.state_contract.required_paths if not _state_path_exists(state, path)
     ]
     if missing_paths:
-        raise MatterAnalysisTaskConflict(
-            f"State builder cannot provide required paths: {', '.join(missing_paths)}"
+        raise MatterAnalysisTaskConflict(f"State builder cannot provide required paths: {', '.join(missing_paths)}")
+    engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
+    model_key = str(workflow.configuration_snapshot.get("model_key") or skill_version.model_key)
+    execution_profile = workflow.configuration_snapshot.get("execution_profile") or {}
+    profile_model_policy = execution_profile.get("model_policy") or {}
+    model_settings = {**skill_version.model_policy, **profile_model_policy, "engine_key": engine_key}
+    inline_evidence_questions = {}
+    inline_evidence_plans = ()
+    if settings.qa_inline_evidence_enabled:
+        inline_evidence_questions, inline_evidence_plans = build_inline_evidence_questions(
+            specification,
+            paragraph_map,
         )
-    state = _classification_state(
+        inline_static_characters = len(
+            json.dumps(
+                {key: question.model_dump(mode="json") for key, question in inline_evidence_questions.items()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        if engine_key != "jev" and inline_static_characters > settings.qa_inline_evidence_max_static_characters:
+            inline_evidence_questions = {}
+            inline_evidence_plans = ()
+    primary_state = _classification_state(
         state,
         required_paths=specification.state_contract.required_paths,
     )
-    engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
+    inline_state = _classification_state(
+        state,
+        required_paths=specification.state_contract.required_paths,
+        preserve_paragraphs=bool(inline_evidence_questions),
+    )
+    combined_questions = {**specification.questions, **inline_evidence_questions}
+    inline_bindings = {
+        plan.question_key: DecisionEvidenceBinding(
+            question_key=plan.question_key,
+            exists_question_key=str(plan.exists_question_key),
+            location_question_key=str(plan.location_question_key),
+        )
+        for plan in inline_evidence_plans
+        if plan.exists_question_key is not None and plan.location_question_key is not None
+    }
+    primary_planned_request_count = 1
+    inline_planned_request_count: int | None = None
+    if inline_evidence_questions and engine_key == "jev":
+        primary_planned_request_count = planned_jev_request_count(
+            DecisionRequest(state=primary_state, questions=specification.questions, model_key=model_key),
+            settings,
+        )
+        try:
+            inline_planned_request_count = planned_jev_request_count(
+                DecisionRequest(
+                    state=inline_state,
+                    questions=combined_questions,
+                    model_key=model_key,
+                    evidence_bindings=inline_bindings,
+                ),
+                settings,
+            )
+        except DecisionEngineProviderError:
+            inline_planned_request_count = primary_planned_request_count + 1
+        if inline_planned_request_count > primary_planned_request_count:
+            inline_evidence_questions = {}
+            inline_evidence_plans = ()
+            inline_bindings = {}
+            combined_questions = dict(specification.questions)
+            inline_state = primary_state
+    state = inline_state if inline_evidence_questions else primary_state
     state_characters = len(json.dumps(state, ensure_ascii=False, separators=(",", ":")))
     if engine_key != "jev" and state_characters > settings.analysis_task_decision_max_characters:
         raise MatterAnalysisTaskInputTooLarge(
@@ -550,8 +611,12 @@ def execute_analysis_task_document(
     request_input = {
         "phase": "CLASSIFICATION",
         "state": state,
-        "questions": {
-            key: question.model_dump(mode="json") for key, question in specification.questions.items()
+        "questions": {key: question.model_dump(mode="json") for key, question in combined_questions.items()},
+        "evidence_collection": {
+            "mode": "INLINE" if inline_evidence_questions else "CONDITIONAL_SECOND_PASS",
+            "version": (
+                INLINE_EVIDENCE_LOCALIZATION_VERSION if inline_evidence_questions else EVIDENCE_LOCALIZATION_VERSION
+            ),
         },
         "task_version": {
             "id": str(task_version.id),
@@ -569,18 +634,19 @@ def execute_analysis_task_document(
         scope_id=document.id,
         request_input=request_input,
     )
-    model_key = str(workflow.configuration_snapshot.get("model_key") or skill_version.model_key)
-    execution_profile = workflow.configuration_snapshot.get("execution_profile") or {}
-    profile_model_policy = execution_profile.get("model_policy") or {}
-    model_settings = {**skill_version.model_policy, **profile_model_policy, "engine_key": engine_key}
+    # Persist the durable RUNNING marker, then return the connection to the pool
+    # before the provider call.  expire_on_commit=False keeps the immutable
+    # execution snapshot available without reopening a transaction.
+    db.commit()
     request = DecisionRequest(
         state=state,
-        questions=specification.questions,
+        questions=combined_questions,
         model_key=model_key,
         model_settings=model_settings,
         limits=skill_version.limits,
         run_id=str(skill_run.id),
         request_type="analysis-task-classification",
+        evidence_bindings=inline_bindings,
         idempotency_key=json_content_hash(
             {
                 "phase": "CLASSIFICATION",
@@ -589,6 +655,9 @@ def execute_analysis_task_document(
                 "state_hash": json_content_hash(state),
                 "model_key": model_key,
                 "execution_profile_content_hash": execution_profile.get("content_hash"),
+                "evidence_collection_version": (
+                    INLINE_EVIDENCE_LOCALIZATION_VERSION if inline_evidence_questions else EVIDENCE_LOCALIZATION_VERSION
+                ),
             }
         ),
     )
@@ -599,14 +668,15 @@ def execute_analysis_task_document(
         else "MATTER_ANALYSIS_TASK_BATCH"
     )
     try:
-        execution = asyncio.run(
-            execute_decision_request(
-                request,
-                engine_key=engine_key,
-                registry=decision_registry,
-                settings=settings,
+        with database_lease.suspended() if database_lease is not None else nullcontext():
+            execution = asyncio.run(
+                execute_decision_request(
+                    request,
+                    engine_key=engine_key,
+                    registry=decision_registry,
+                    settings=settings,
+                )
             )
-        )
         invocations = persist_model_invocations(
             db,
             execution.invocations,
@@ -631,6 +701,7 @@ def execute_analysis_task_document(
         complete_skill_run(db, skill_run, refresh_workflow_usage=complete_run)
     except Exception as exc:
         fail_skill_run(skill_run, exc)
+        db.commit()
         raise
     primary_answers = primary_decision_answers(specification, execution.decision.answers)
     primary_envelope = execution.decision.model_copy(update={"answers": primary_answers})
@@ -644,13 +715,23 @@ def execute_analysis_task_document(
         recommendations,
         routes,
     )
-    evidence_questions, evidence_plans = build_conditional_evidence_questions(
-        specification,
-        paragraph_map,
-        evidence_question_keys,
-    )
+    if inline_evidence_questions:
+        evidence_questions = {}
+        evidence_plans = select_evidence_plans(
+            inline_evidence_plans,
+            evidence_question_keys,
+        )
+        evidence_answers = execution.decision.answers
+        evidence_collection_mode = "INLINE"
+    else:
+        evidence_questions, evidence_plans = build_conditional_evidence_questions(
+            specification,
+            paragraph_map,
+            evidence_question_keys,
+        )
+        evidence_answers = {}
+        evidence_collection_mode = "CONDITIONAL_SECOND_PASS"
     evidence_skill_run = None
-    evidence_answers = {}
     if evidence_questions:
         evidence_state = {
             "document": {
@@ -659,17 +740,13 @@ def execute_analysis_task_document(
                 "paragraphs": [paragraph.as_dict() for paragraph in paragraph_map.paragraphs],
             },
             "classification": {
-                "answers": {
-                    key: primary_answers[key].model_dump(mode="json") for key in evidence_question_keys
-                }
+                "answers": {key: primary_answers[key].model_dump(mode="json") for key in evidence_question_keys}
             },
         }
         evidence_request_input = {
             "phase": "EVIDENCE_LOCALIZATION",
             "state": evidence_state,
-            "questions": {
-                key: question.model_dump(mode="json") for key, question in evidence_questions.items()
-            },
+            "questions": {key: question.model_dump(mode="json") for key, question in evidence_questions.items()},
             "evidence_localization_version": EVIDENCE_LOCALIZATION_VERSION,
             "task_version": {
                 "id": str(task_version.id),
@@ -686,6 +763,7 @@ def execute_analysis_task_document(
             scope_id=document.id,
             request_input=evidence_request_input,
         )
+        db.commit()
         evidence_request = DecisionRequest(
             state=evidence_state,
             questions=evidence_questions,
@@ -707,14 +785,15 @@ def execute_analysis_task_document(
             ),
         )
         try:
-            evidence_execution = asyncio.run(
-                execute_decision_request(
-                    evidence_request,
-                    engine_key=engine_key,
-                    registry=decision_registry,
-                    settings=settings,
+            with database_lease.suspended() if database_lease is not None else nullcontext():
+                evidence_execution = asyncio.run(
+                    execute_decision_request(
+                        evidence_request,
+                        engine_key=engine_key,
+                        registry=decision_registry,
+                        settings=settings,
+                    )
                 )
-            )
             persist_model_invocations(
                 db,
                 evidence_execution.invocations,
@@ -740,10 +819,17 @@ def execute_analysis_task_document(
             evidence_answers = evidence_execution.decision.answers
         except Exception as exc:
             fail_skill_run(evidence_skill_run, exc)
+            db.commit()
             raise
     evidence, evidence_complete = collect_conditional_evidence(
         evidence_plans,
         evidence_answers,
+        method=(
+            INLINE_EVIDENCE_LOCALIZATION_VERSION
+            if evidence_collection_mode == "INLINE"
+            else EVIDENCE_LOCALIZATION_VERSION
+        ),
+        primary_answers=primary_answers,
     )
     result = record_review_decision_result(
         db,
@@ -768,6 +854,15 @@ def execute_analysis_task_document(
             "evidence_complete": evidence_complete,
             "evidence_target_question_count": len(evidence_question_keys),
             "evidence_localization_request_count": 1 if evidence_questions else 0,
+            "evidence_collection_mode": evidence_collection_mode,
+            "classification_provider_request_count": execution.decision.usage.request_count,
+            "classification_planned_request_count": (
+                inline_planned_request_count
+                if evidence_collection_mode == "INLINE" and inline_planned_request_count is not None
+                else primary_planned_request_count
+            ),
+            "classification_window_count": int(execution.decision.provider_metadata.get("window_count", 1)),
+            "database_capacity_wait_ms": database_lease.wait_ms if database_lease is not None else 0,
             "paragraph_count": len(paragraph_map.paragraphs),
         },
         evidence_skill_run_id=evidence_skill_run.id if evidence_skill_run is not None else None,
@@ -842,17 +937,13 @@ def fail_analysis_task_playground(db: Session, workflow_run_id: uuid.UUID, messa
         step.failed_count = 1
         step.error_message = message[:4000]
         step.completed_at = now
-    review_run = db.scalar(
-        select(ReviewBatchRun).where(ReviewBatchRun.workflow_run_record_id == workflow.id)
-    )
+    review_run = db.scalar(select(ReviewBatchRun).where(ReviewBatchRun.workflow_run_record_id == workflow.id))
     if review_run is not None:
         review_run.status = "FAILED"
         review_run.error_message = message[:4000]
         review_run.completed_at = now
         run_document = db.scalar(
-            select(ReviewBatchRunDocument).where(
-                ReviewBatchRunDocument.review_batch_run_id == review_run.id
-            )
+            select(ReviewBatchRunDocument).where(ReviewBatchRunDocument.review_batch_run_id == review_run.id)
         )
         if run_document is not None:
             run_document.status = "FAILED"

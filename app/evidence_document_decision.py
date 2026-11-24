@@ -10,7 +10,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.artifact_gateway import WorkflowArtifactReference, store_workflow_artifact
+from app.artifact_gateway import (
+    WorkflowArtifactReference,
+    copy_workflow_artifact_content,
+    find_workflow_artifact_reference,
+    store_workflow_artifact,
+)
 from app.evidence_adjudication_artifacts import (
     CriterionAdjudicationPlan,
     CriterionDecisionsResult,
@@ -166,13 +171,33 @@ def store_document_decision_artifact(
     actor_user_id: uuid.UUID,
 ) -> tuple[WorkflowArtifactReference, bool]:
     content = document_decision_bytes(result)
+    derivation_key = document_decision_derivation_key(result)
+    existing = find_workflow_artifact_reference(
+        artifact_type=ArtifactType.ANALYSIS_DOCUMENT_DECISION,
+        derivation_key=derivation_key,
+        actor_user_id=actor_user_id,
+        tenant_id=result.tenant_id,
+        client_id=result.client_id,
+    )
+    if existing is not None:
+        destination = BytesIO()
+        copy_workflow_artifact_content(
+            artifact_id=existing.artifact_id,
+            destination=destination,
+            actor_user_id=actor_user_id,
+            tenant_id=result.tenant_id,
+            client_id=result.client_id,
+        )
+        if destination.getvalue() != content or existing.content_hash != sha256(content).hexdigest():
+            raise ValueError("Existing document decision does not match its deterministic identity")
+        return existing, False
     return store_workflow_artifact(
         content=BytesIO(content),
         artifact_type=ArtifactType.ANALYSIS_DOCUMENT_DECISION,
         core_scope_kind="MATTER",
         core_scope_id=result.matter_id,
         schema_version=ANALYSIS_DOCUMENT_DECISION_SCHEMA_VERSION,
-        derivation_key=document_decision_derivation_key(result),
+        derivation_key=derivation_key,
         content_hash=sha256(content).hexdigest(),
         byte_length=len(content),
         media_type="application/json",

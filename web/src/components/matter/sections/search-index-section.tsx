@@ -69,6 +69,15 @@ export function SearchIndexSection() {
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The failed search jobs could not be requeued."),
   });
+  const retrySearchOperationMutation = useMutation({
+    mutationFn: (operationId: string) => coreApi<SearchProjectionOperationRead>(`/v1/matters/${matterId}/search-operations/${operationId}/retry`, { method: "POST" }),
+    onSuccess: (operation) => {
+      queryClient.setQueryData<SearchProjectionOperationRead[]>(["search-operations", matterId], (current) => current?.map((item) => item.id === operation.id ? operation : item));
+      void queryClient.invalidateQueries({ queryKey: ["retryable-search-operations", matterId] });
+      toast.success("The document update was requeued. Completed index records will be safely overwritten.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The document update could not be retried."),
+  });
 
   if (searchIndexes.isPending || searchOperations.isPending || retryableSearchOperations.isPending || overviewCounts.isPending) return <TableLoading />;
   if (searchIndexes.error || searchOperations.error || retryableSearchOperations.error || overviewCounts.error) return <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? retryableSearchOperations.error?.message ?? overviewCounts.error?.message} />;
@@ -86,5 +95,7 @@ export function SearchIndexSection() {
     retryingFailed={retryFailedSearchMutation.isPending}
     retryableOperationCount={retryableSearchOperations.data.requeued_operation_count}
     retryableDocumentCount={retryableSearchOperations.data.requeued_document_count}
+    onRetryOperation={(operationId) => retrySearchOperationMutation.mutateAsync(operationId).then(() => undefined)}
+    retryingOperationId={retrySearchOperationMutation.isPending ? retrySearchOperationMutation.variables : undefined}
   />;
 }

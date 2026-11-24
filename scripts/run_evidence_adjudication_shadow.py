@@ -27,6 +27,14 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--assessment-id", type=uuid.UUID, required=True)
     parser.add_argument("--observations-artifact-id", type=uuid.UUID, required=True)
     parser.add_argument(
+        "--target-matter-document-id",
+        type=uuid.UUID,
+        help=(
+            "Optional family member to adjudicate. When supplied, only evidence cited to this "
+            "document is considered while retaining the family artifact as provenance."
+        ),
+    )
+    parser.add_argument(
         "--adjudication-model",
         help="Optional resolved provider:model override for this isolated shadow plan",
     )
@@ -47,6 +55,7 @@ def main() -> None:
             assessment_id=arguments.assessment_id,
             observations_artifact_id=arguments.observations_artifact_id,
             adjudication_model=arguments.adjudication_model,
+            target_matter_document_id=arguments.target_matter_document_id,
         )
         report = (
             asyncio.run(

@@ -30,8 +30,11 @@ from app.evidence_first_contracts import (
 
 
 def test_role_prompts_preserve_required_element_evidence_without_inference() -> None:
-    assert "Preserve distinct source" in EVIDENCE_EXTRACTION_INSTRUCTIONS
-    assert "facts needed to evaluate those elements" in EVIDENCE_EXTRACTION_INSTRUCTIONS
+    assert "Evidence is a source-grounded factual proposition" in EVIDENCE_EXTRACTION_INSTRUCTIONS
+    assert "Work criterion by criterion" in EVIDENCE_EXTRACTION_INSTRUCTIONS
+    assert "Extract favorable and unfavorable facts" in EVIDENCE_EXTRACTION_INSTRUCTIONS
+    assert "what explicit fact is established" in EVIDENCE_EXTRACTION_INSTRUCTIONS
+    assert "COUNTERVAILING" in EVIDENCE_EXTRACTION_INSTRUCTIONS
     assert "absence is not evidence" in EVIDENCE_EXTRACTION_INSTRUCTIONS
     assert "allowed only when the packet affirmatively supports" in CRITERION_ADJUDICATION_INSTRUCTIONS
     assert "using the evidence packet as a whole" in CRITERION_ADJUDICATION_INSTRUCTIONS

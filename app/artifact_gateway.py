@@ -260,6 +260,128 @@ class EmailParticipantSnapshot:
     recipients: dict[str, list[str]]
 
 
+@dataclass(frozen=True)
+class IdentityParticipantSnapshot:
+    email_address: str | None
+    display_name: str | None
+
+
+@dataclass(frozen=True)
+class IdentityMetadataSnapshot:
+    """Structured participant metadata only; no subject, body, filename, or extracted text."""
+
+    item_id: uuid.UUID
+    sender: IdentityParticipantSnapshot | None
+    recipients: dict[str, list[IdentityParticipantSnapshot]]
+
+
+def get_identity_metadata_snapshots(
+    *,
+    collection_item_ids: list[uuid.UUID],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, IdentityMetadataSnapshot]:
+    """Read only structured sender/recipient metadata for Identity Analysis."""
+
+    if not collection_item_ids:
+        return {}
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            item_ids = set(
+                db.scalars(
+                    select(CollectionItem.id).where(
+                        CollectionItem.id.in_(collection_item_ids),
+                        CollectionItem.tenant_id == tenant_id,
+                        CollectionItem.client_id == client_id,
+                    )
+                )
+            )
+            if item_ids != set(collection_item_ids):
+                raise PermissionError("One or more collection items are not available to this matter")
+            senders = {
+                item_id: sender
+                for item_id, sender in db.execute(
+                    select(CollectionItemEmail.collection_item_id, CollectionItemEmail.sender).where(
+                        CollectionItemEmail.collection_item_id.in_(item_ids)
+                    )
+                )
+            }
+            snapshots = {
+                item_id: IdentityMetadataSnapshot(
+                    item_id=item_id,
+                    sender=(
+                        IdentityParticipantSnapshot(email_address=senders[item_id], display_name=None)
+                        if senders.get(item_id)
+                        else None
+                    ),
+                    recipients={"TO": [], "CC": [], "BCC": []},
+                )
+                for item_id in item_ids
+            }
+            for item_id, recipient_type, email_address, display_name in db.execute(
+                select(
+                    CollectionItemEmailRecipient.collection_item_id,
+                    CollectionItemEmailRecipient.recipient_type,
+                    CollectionItemEmailRecipient.email_address,
+                    CollectionItemEmailRecipient.display_name,
+                )
+                .where(CollectionItemEmailRecipient.collection_item_id.in_(item_ids))
+                .order_by(
+                    CollectionItemEmailRecipient.collection_item_id,
+                    CollectionItemEmailRecipient.recipient_type,
+                    CollectionItemEmailRecipient.ordinal,
+                )
+            ):
+                snapshots[item_id].recipients[recipient_type].append(
+                    IdentityParticipantSnapshot(email_address=email_address, display_name=display_name)
+                )
+            return snapshots
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.post(
+            "/v1/collection-items/identity-metadata",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+            json={
+                "tenant_id": str(tenant_id),
+                "client_id": str(client_id),
+                "item_ids": [str(item_id) for item_id in collection_item_ids],
+            },
+        )
+    if response.status_code == 403:
+        raise PermissionError("One or more collection items are not available to this matter")
+    response.raise_for_status()
+    snapshots: dict[uuid.UUID, IdentityMetadataSnapshot] = {}
+    for row in response.json():
+        item_id = uuid.UUID(row["item_id"])
+        sender = row.get("sender")
+        snapshots[item_id] = IdentityMetadataSnapshot(
+            item_id=item_id,
+            sender=(
+                IdentityParticipantSnapshot(
+                    email_address=sender.get("email_address"),
+                    display_name=sender.get("display_name"),
+                )
+                if sender
+                else None
+            ),
+            recipients={
+                role: [
+                    IdentityParticipantSnapshot(
+                        email_address=participant.get("email_address"),
+                        display_name=participant.get("display_name"),
+                    )
+                    for participant in (row.get("recipients") or {}).get(role, [])
+                ]
+                for role in ("TO", "CC", "BCC")
+            },
+        )
+    if set(snapshots) != set(collection_item_ids):
+        raise PermissionError("One or more collection items are not available to this matter")
+    return snapshots
+
+
 def get_email_participant_snapshots(
     *,
     collection_item_ids: list[uuid.UUID],

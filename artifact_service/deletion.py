@@ -46,9 +46,7 @@ def create_deletion_job(
     collection_id: uuid.UUID,
     requested_by_user_id: uuid.UUID,
 ) -> CollectionDeletionJob:
-    collection = db.scalar(
-        select(ClientCollection).where(ClientCollection.id == collection_id).with_for_update()
-    )
+    collection = db.scalar(select(ClientCollection).where(ClientCollection.id == collection_id).with_for_update())
     if collection is None:
         raise ValueError("Collection not found")
     existing = db.scalar(
@@ -82,9 +80,7 @@ def create_deletion_job(
         raise ValueError("Collection has an active text processing run")
 
     item_count = int(
-        db.scalar(
-            select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection.id)
-        )
+        db.scalar(select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection.id))
         or 0
     )
     item_artifact_count = int(
@@ -126,9 +122,7 @@ def create_deletion_job(
 
 
 def retry_deletion_job(db: Session, job_id: uuid.UUID) -> CollectionDeletionJob:
-    job = db.scalar(
-        select(CollectionDeletionJob).where(CollectionDeletionJob.id == job_id).with_for_update()
-    )
+    job = db.scalar(select(CollectionDeletionJob).where(CollectionDeletionJob.id == job_id).with_for_update())
     if job is None:
         raise ValueError("Collection deletion job not found")
     if job.status != "FAILED":
@@ -202,11 +196,7 @@ def _delete_artifacts_and_schedule_blobs(
     db.flush()
 
     referenced_blob_ids = set(
-        db.scalars(
-            select(Artifact.content_blob_id)
-            .where(Artifact.content_blob_id.in_(blob_ids))
-            .distinct()
-        )
+        db.scalars(select(Artifact.content_blob_id).where(Artifact.content_blob_id.in_(blob_ids)).distinct())
     )
     deletable_blobs = [row for row in blob_rows if row["id"] not in referenced_blob_ids]
     if deletable_blobs:
@@ -252,15 +242,11 @@ def delete_item_batch(
 
     artifact_ids = list(
         db.scalars(
-            select(CollectionItemArtifact.artifact_id).where(
-                CollectionItemArtifact.collection_item_id.in_(item_ids)
-            )
+            select(CollectionItemArtifact.artifact_id).where(CollectionItemArtifact.collection_item_id.in_(item_ids))
         )
     )
     selection_ids = list(
-        db.scalars(
-            select(CollectionSelection.id).where(CollectionSelection.collection_id == job.collection_id)
-        )
+        db.scalars(select(CollectionSelection.id).where(CollectionSelection.collection_id == job.collection_id))
     )
     if selection_ids:
         db.execute(
@@ -270,22 +256,19 @@ def delete_item_batch(
             )
         )
     db.execute(
-        delete(CollectionItemEmailRecipient).where(
-            CollectionItemEmailRecipient.collection_item_id.in_(item_ids)
-        )
+        delete(CollectionItemEmailRecipient).where(CollectionItemEmailRecipient.collection_item_id.in_(item_ids))
     )
     db.execute(delete(CollectionItemEmail).where(CollectionItemEmail.collection_item_id.in_(item_ids)))
-    db.execute(
-        delete(CollectionItemCustodian).where(CollectionItemCustodian.collection_item_id.in_(item_ids))
-    )
+    db.execute(delete(CollectionItemCustodian).where(CollectionItemCustodian.collection_item_id.in_(item_ids)))
     artifact_count = _delete_artifacts_and_schedule_blobs(db, job, artifact_ids)
     db.execute(delete(CollectionItem).where(CollectionItem.id.in_(item_ids)))
     job.deleted_item_count += len(item_ids)
     job.deleted_artifact_count += artifact_count
     db.commit()
-    has_more = db.scalar(
-        select(CollectionItem.id).where(CollectionItem.collection_id == job.collection_id).limit(1)
-    ) is not None
+    has_more = (
+        db.scalar(select(CollectionItem.id).where(CollectionItem.collection_id == job.collection_id).limit(1))
+        is not None
+    )
     return {
         "deleted_items": len(item_ids),
         "deleted_artifacts": artifact_count,
@@ -302,34 +285,24 @@ def delete_collection_record(db: Session, job_id: uuid.UUID) -> dict[str, int]:
         job.status = "DELETING_BLOBS"
         db.commit()
         return {"deleted_artifacts": 0}
-    remaining_item = db.scalar(
-        select(CollectionItem.id).where(CollectionItem.collection_id == collection.id).limit(1)
-    )
+    remaining_item = db.scalar(select(CollectionItem.id).where(CollectionItem.collection_id == collection.id).limit(1))
     if remaining_item is not None:
         raise ValueError("Collection items remain")
 
     artifact_ids = list(
-        db.scalars(
-            select(CollectionArtifact.artifact_id).where(CollectionArtifact.collection_id == collection.id)
-        )
+        db.scalars(select(CollectionArtifact.artifact_id).where(CollectionArtifact.collection_id == collection.id))
     )
     artifact_count = _delete_artifacts_and_schedule_blobs(db, job, artifact_ids)
     selection_ids = list(
         db.scalars(select(CollectionSelection.id).where(CollectionSelection.collection_id == collection.id))
     )
     if selection_ids:
-        db.execute(
-            delete(CollectionSelectionItem).where(CollectionSelectionItem.selection_id.in_(selection_ids))
-        )
+        db.execute(delete(CollectionSelectionItem).where(CollectionSelectionItem.selection_id.in_(selection_ids)))
     db.execute(delete(CollectionSelection).where(CollectionSelection.collection_id == collection.id))
     db.execute(
-        delete(CollectionTextProcessingProfile).where(
-            CollectionTextProcessingProfile.collection_id == collection.id
-        )
+        delete(CollectionTextProcessingProfile).where(CollectionTextProcessingProfile.collection_id == collection.id)
     )
-    db.execute(
-        delete(CollectionTextProcessingRun).where(CollectionTextProcessingRun.collection_id == collection.id)
-    )
+    db.execute(delete(CollectionTextProcessingRun).where(CollectionTextProcessingRun.collection_id == collection.id))
     db.delete(collection)
     job.deleted_artifact_count += artifact_count
     job.status = "DELETING_BLOBS"
@@ -361,20 +334,24 @@ def delete_blob_batch(
     keys_by_bucket: dict[str, list[str]] = defaultdict(list)
     for blob in blobs:
         keys_by_bucket[blob.bucket_name].append(blob.storage_key)
+    db.commit()
     for bucket_name, storage_keys in keys_by_bucket.items():
         storage.delete_many(bucket_name, storage_keys)
     for blob in blobs:
         blob.status = "DELETED"
     job.deleted_blob_count += len(blobs)
     db.commit()
-    has_more = db.scalar(
-        select(CollectionDeletionBlob.id)
-        .where(
-            CollectionDeletionBlob.deletion_job_id == job.id,
-            CollectionDeletionBlob.status == "PENDING",
+    has_more = (
+        db.scalar(
+            select(CollectionDeletionBlob.id)
+            .where(
+                CollectionDeletionBlob.deletion_job_id == job.id,
+                CollectionDeletionBlob.status == "PENDING",
+            )
+            .limit(1)
         )
-        .limit(1)
-    ) is not None
+        is not None
+    )
     return {"deleted_blobs": len(blobs), "has_more": has_more}
 
 
@@ -394,9 +371,7 @@ def complete_deletion(db: Session, job_id: uuid.UUID) -> CollectionDeletionJob:
         raise ValueError("Collection blob deletions remain")
     # The permanent job retains aggregate audit counts; per-object cleanup rows are
     # only needed while deletion is resumable.
-    db.execute(
-        delete(CollectionDeletionBlob).where(CollectionDeletionBlob.deletion_job_id == job.id)
-    )
+    db.execute(delete(CollectionDeletionBlob).where(CollectionDeletionBlob.deletion_job_id == job.id))
     job.status = "COMPLETED"
     job.completed_at = utcnow()
     job.error_message = None

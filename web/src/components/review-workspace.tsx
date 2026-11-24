@@ -84,6 +84,26 @@ const SEMANTIC_CANDIDATE_LIMIT = 1600;
 const HYBRID_CANDIDATE_LIMIT = 100;
 const SEARCH_PROJECTION_POLL_MS = 500;
 const SEARCH_PROJECTION_POLL_ATTEMPTS = 60;
+
+type MatterDocumentFamilyMember = {
+  matter_document_id: string | null;
+  collection_item_id: string;
+  identifier: string;
+  display_name: string;
+  record_type: string;
+  relationship: "PARENT" | "ATTACHMENT";
+  is_current: boolean;
+  available_in_matter: boolean;
+};
+
+type MatterDocumentFamily = {
+  family_id: string | null;
+  current_document_id: string;
+  current_role: "PARENT" | "ATTACHMENT" | "STANDALONE";
+  parent: MatterDocumentFamilyMember | null;
+  children: MatterDocumentFamilyMember[];
+  unavailable_member_count: number;
+};
 const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
   KEYWORD: "Search document body, filenames, paths, email headers, and metadata",
   SEMANTIC: "Find documents by concept or meaning, not only exact words",
@@ -488,8 +508,7 @@ export function ReviewWorkspace({
   });
 
   const effectiveSelectedDocumentId = selectedDocumentId || searchResults.data?.hits[0]?.document_id || "";
-  const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveSelectedDocumentId);
-  const selectedHighlightTerms = useMemo(() => selectedHit ? resultHighlightTerms(selectedHit) : [], [selectedHit]);
+  const pageSelectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveSelectedDocumentId);
   const collectionItem = useQuery({
     queryKey: ["matter-document-collection-item", matterId, effectiveSelectedDocumentId],
     queryFn: () => coreApi<CollectionItemRead>(`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/collection-item`),
@@ -500,6 +519,36 @@ export function ReviewWorkspace({
     queryFn: () => coreApi<DocumentMetadataFieldRead[]>(`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/metadata-values`),
     enabled: Boolean(effectiveSelectedDocumentId),
   });
+  const documentFamily = useQuery({
+    queryKey: ["matter-document-family", matterId, effectiveSelectedDocumentId],
+    queryFn: () => coreApi<MatterDocumentFamily>(`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/family`),
+    enabled: Boolean(effectiveSelectedDocumentId),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const selectedHit = useMemo<MatterSearchHit | undefined>(() => {
+    if (pageSelectedHit) return pageSelectedHit;
+    if (!effectiveSelectedDocumentId || !collectionItem.data) return undefined;
+    const metadata = Object.fromEntries((metadataValues.data ?? []).map((field) => {
+      const values = field.values.map((value) => value.value);
+      return [field.key, field.cardinality === "MULTIPLE" ? values : values[0] ?? null];
+    }));
+    return {
+      document_id: effectiveSelectedDocumentId,
+      score: null,
+      fields: {
+        collection_item_id: collectionItem.data.id,
+        original_filename: collectionItem.data.original_filename,
+        source_path: collectionItem.data.original_source_path,
+        record_type: collectionItem.data.record_type,
+        email_subject: collectionItem.data.email?.subject ?? null,
+        email_from: collectionItem.data.email?.sender ?? null,
+        metadata,
+      },
+      highlights: {},
+      best_passage: null,
+    };
+  }, [collectionItem.data, effectiveSelectedDocumentId, metadataValues.data, pageSelectedHit]);
+  const selectedHighlightTerms = useMemo(() => selectedHit ? resultHighlightTerms(selectedHit) : [], [selectedHit]);
 
   const syncUrl = useCallback((
     nextQuery: string,
@@ -823,11 +872,18 @@ export function ReviewWorkspace({
         </section>
         <ResizeHandle className="hidden md:flex" label="Resize result panel" value={resultsWidth} min={288} max={640} onChange={setResultsWidth} />
 
-        <section className={cn("min-h-0 min-w-0 flex-1 overflow-hidden bg-background", mobileDocumentOpen ? "flex" : "hidden md:flex")} aria-label="Selected document">
-          {collectionItem.isPending && effectiveSelectedDocumentId ? <DocumentLoading />
-            : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
-            : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} contentPath={`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/content`} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
-            : <DocumentEmpty />}
+        <section className={cn("min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background", mobileDocumentOpen ? "flex" : "hidden md:flex")} aria-label="Selected document">
+          <DocumentFamilyNavigation
+            family={documentFamily.data}
+            loading={documentFamily.isPending && Boolean(effectiveSelectedDocumentId)}
+            onSelect={selectDocument}
+          />
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            {collectionItem.isPending && effectiveSelectedDocumentId ? <DocumentLoading />
+              : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
+              : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} contentPath={`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/content`} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
+              : <DocumentEmpty />}
+          </div>
         </section>
         <ResizeHandle className="hidden 2xl:flex" label="Resize document details panel" value={detailsWidth} min={304} max={520} direction={-1} onChange={setDetailsWidth} />
 
@@ -1204,6 +1260,46 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
 }
 
 type DetailsTab = "coding" | "metadata" | "history" | "chat";
+
+function DocumentFamilyNavigation({ family, loading, onSelect }: {
+  family?: MatterDocumentFamily;
+  loading: boolean;
+  onSelect: (documentId: string) => void;
+}) {
+  if (loading) return <div className="shrink-0 border-b bg-card/80 px-3 py-2"><Skeleton className="h-7 w-52" /></div>;
+  if (!family || family.current_role === "STANDALONE") return null;
+
+  const openMember = (member: MatterDocumentFamilyMember) => {
+    if (member.matter_document_id && !member.is_current) onSelect(member.matter_document_id);
+  };
+  const memberButton = (member: MatterDocumentFamilyMember, prefix: string) => {
+    const unavailable = !member.available_in_matter || !member.matter_document_id;
+    const label = member.is_current ? `${prefix}: ${member.display_name} (current)` : `${prefix}: ${member.display_name}`;
+    return <button
+      key={`${member.relationship}:${member.collection_item_id}`}
+      type="button"
+      disabled={unavailable || member.is_current}
+      title={unavailable ? `${member.display_name} is not available in this matter` : label}
+      aria-label={member.is_current ? label : `Open ${label}`}
+      onClick={() => openMember(member)}
+      className={cn(
+        "inline-flex h-7 max-w-72 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition",
+        member.is_current ? "border-primary/40 bg-primary/10 text-primary" : "bg-background hover:bg-muted",
+        unavailable && "cursor-not-allowed border-dashed text-muted-foreground opacity-70",
+      )}
+    ><FileText className="size-3.5 shrink-0" /><span className="truncate">{label}</span></button>;
+  };
+
+  return <nav className="shrink-0 border-b bg-card/80 px-3 py-2" aria-label="Document family navigation">
+    <div className="flex min-w-0 items-center gap-2 overflow-x-auto overscroll-x-contain">
+      <Badge variant="outline" className="shrink-0">Family</Badge>
+      {family.parent ? memberButton(family.parent, "Parent") : null}
+      {family.children.length ? <span className="shrink-0 text-xs text-muted-foreground">Attachments ({family.children.length})</span> : null}
+      {family.children.map((child, index) => memberButton(child, `Attachment ${index + 1}`))}
+      {family.unavailable_member_count ? <span className="shrink-0 text-xs text-muted-foreground">{family.unavailable_member_count} outside matter</span> : null}
+    </div>
+  </nav>;
+}
 
 function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCount, searchLoading, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag, onOpenChatDocument, onOpenChatConversation }: {
   canReview: boolean;

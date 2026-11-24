@@ -19,11 +19,13 @@ from app.evidence_first_launcher import (
     _build_document_plan,
     _require_shadow_operator,
     execute_prepared_evidence_shadow,
+    frozen_evidence_stage_model,
     shadow_launch_key,
     shadow_plan_report,
     validate_shadow_selection,
 )
 from app.model_execution import content_hash
+from scripts import run_evidence_shadow
 
 
 def _prepared_launch() -> PreparedEvidenceShadowLaunch:
@@ -115,6 +117,7 @@ def _prepared_launch() -> PreparedEvidenceShadowLaunch:
         catalog=catalog,
         skill_version=skill_version,
         resolved_model="google:gemini-3.7-flash",
+        model_settings={"temperature": 0},
         binding_snapshot={},
         documents=(
             PreparedEvidenceShadowDocument(
@@ -145,6 +148,19 @@ def test_shadow_selection_requires_one_bounded_strategy() -> None:
         validate_shadow_selection(document_ids=None, max_documents=MAX_SHADOW_DOCUMENTS + 1)
 
 
+def test_frozen_evidence_stage_model_pins_privilege_extraction_override() -> None:
+    assert frozen_evidence_stage_model(
+        {
+            "evidence_first_orchestration": {
+                "stages": {
+                    "EXTRACTION": {"resolved_model": "openai:gpt-6-luna"},
+                }
+            }
+        },
+        stage="EXTRACTION",
+    ) == "openai:gpt-6-luna"
+
+
 def test_document_plan_retains_native_artifact_hash_not_rendered_text_hash() -> None:
     prepared = _prepared_launch()
     value = prepared.documents[0]
@@ -168,6 +184,32 @@ def test_dry_run_report_is_deterministic_and_excludes_source_text() -> None:
     assert "Alpha evidence" not in serialized
     assert "lawyer@example.com" not in serialized
     assert report["documents"][0]["document_context_item_count"] == 1
+
+
+def test_shadow_script_accepts_isolated_model_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_evidence_shadow",
+            "--actor-user-id",
+            str(uuid.UUID(int=1)),
+            "--assessment-id",
+            str(uuid.UUID(int=2)),
+            "--document-id",
+            str(uuid.UUID(int=3)),
+            "--extraction-model",
+            "google:gemini-3.7-flash",
+            "--extraction-model-settings-json",
+            "{}",
+            "--output",
+            "/tmp/shadow.json",
+        ],
+    )
+
+    arguments = run_evidence_shadow._arguments()
+
+    assert arguments.extraction_model == "google:gemini-3.7-flash"
+    assert arguments.extraction_model_settings_json == "{}"
 
 
 def test_launch_key_changes_when_selected_plan_order_changes() -> None:

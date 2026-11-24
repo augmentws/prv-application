@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -299,11 +299,7 @@ def resolve_training_job(
 
 
 def _authorized_job(db: Session, job_id: uuid.UUID) -> tuple[ClassificationTrainingJob, Matter]:
-    job = db.scalar(
-        select(ClassificationTrainingJob)
-        .where(ClassificationTrainingJob.id == job_id)
-        .with_for_update()
-    )
+    job = db.scalar(select(ClassificationTrainingJob).where(ClassificationTrainingJob.id == job_id).with_for_update())
     if job is None:
         raise ClassificationTrainingJobNotFoundError("Classification training job not found")
     matter = db.get(Matter, job.matter_id)
@@ -479,8 +475,15 @@ def materialize_training_job_features(job_id: uuid.UUID, snapshot_id: uuid.UUID)
                     actor_user_id=job.created_by_user_id,
                 )
             except ClassificationFeatureSplitError as exc:
+                # Feature preparation can spend minutes outside PostgreSQL. If
+                # the connection was invalidated, recover the session before
+                # recording the durable failure outcome.
+                db.rollback()
+                persisted_snapshot = db.get(ClassificationDatasetSnapshot, snapshot_id)
+                if persisted_snapshot is None:
+                    raise
                 fail_dataset_snapshot(
-                    snapshot,
+                    persisted_snapshot,
                     failure_code=exc.code,
                     failure_summary=str(exc),
                 )
@@ -548,9 +551,7 @@ def launch_training_job_build(job_id: uuid.UUID) -> dict[str, str] | None:
 def complete_training_job(job_id: uuid.UUID) -> None:
     with SessionLocal() as db:
         job = db.scalar(
-            select(ClassificationTrainingJob)
-            .where(ClassificationTrainingJob.id == job_id)
-            .with_for_update()
+            select(ClassificationTrainingJob).where(ClassificationTrainingJob.id == job_id).with_for_update()
         )
         if job is None or job.status == "CANCELED":
             return
@@ -599,9 +600,7 @@ def fail_training_job(
 ) -> None:
     with SessionLocal() as db:
         job = db.scalar(
-            select(ClassificationTrainingJob)
-            .where(ClassificationTrainingJob.id == job_id)
-            .with_for_update()
+            select(ClassificationTrainingJob).where(ClassificationTrainingJob.id == job_id).with_for_update()
         )
         if job is None or job.status in {"COMPLETED", "CANCELED"}:
             return
@@ -610,11 +609,7 @@ def fail_training_job(
             code = run.failure_code or code
             message = run.failure_summary or message
             retriable = run.failure_retriable
-        snapshot = (
-            db.get(ClassificationDatasetSnapshot, job.dataset_snapshot_id)
-            if job.dataset_snapshot_id
-            else None
-        )
+        snapshot = db.get(ClassificationDatasetSnapshot, job.dataset_snapshot_id) if job.dataset_snapshot_id else None
         if snapshot is not None and snapshot.status == "BUILDING":
             fail_dataset_snapshot(
                 snapshot,
@@ -722,9 +717,20 @@ def training_job_failure_details(exc: Exception) -> tuple[str, bool, str]:
                 return training_job_failure_details(nested)
     if isinstance(exc, ClassificationTrainingJobError):
         return exc.code, False, str(exc)
-    if isinstance(exc, OperationalError):
+    if isinstance(exc, DBAPIError):
         code = getattr(exc, "code", None)
-        return code if isinstance(code, str) and code else "DATABASE_OPERATION_FAILED", True, str(exc)
+        summary = str(exc)
+        retriable = (
+            isinstance(exc, OperationalError)
+            or exc.connection_invalidated
+            or "idle-in-transaction timeout" in summary.lower()
+            or "IdleInTransactionSessionTimeout" in summary
+        )
+        return (
+            code if isinstance(code, str) and code else "DATABASE_OPERATION_FAILED",
+            retriable,
+            summary,
+        )
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code:
         return code, False, str(exc)

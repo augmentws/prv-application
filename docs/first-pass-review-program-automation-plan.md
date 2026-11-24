@@ -944,8 +944,10 @@ For selected weak categories, generate a review-data plan that distinguishes:
 - additional likely positives for low support or weak recall;
 - hard negatives and near misses for weak precision;
 - underrepresented families and cohorts;
-- uncertain or low-margin documents when candidate-model acquisition is authorized; and
-- random controls to detect selection bias.
+- uncertain or low-margin documents when candidate-model acquisition is authorized.
+
+Do not add an unmeasured broad-control lane to this supplemental review population. Regression measurement belongs
+on a fixed human or sealed evaluation cohort where the application can report an explicit comparison.
 
 The user may edit queries, filters, quotas, and sampling policy before execution. Code validates the controlled search
 request and freezes the final plan.

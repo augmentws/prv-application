@@ -630,8 +630,9 @@ For each selected weak issue, show a proposed retrieval strategy tied to the wea
 - likely positives for weak recall or support;
 - hard negatives for weak precision;
 - missing families or cohorts;
-- uncertain documents when authorized; and
-- random controls.
+- uncertain documents when authorized.
+
+Do not request broad-control documents unless the workflow presents a separate, measured control-cohort result.
 
 The user may accept, edit, or decline the plan. New candidates appear in a version comparison that separates fixed
 evaluation results from metrics calculated on changed populations.
@@ -771,6 +772,14 @@ explores and compares sources. The population is the union of
 unique documents with a usable result from either pinned Q&A profile across the Review Program's discovery,
 classifier-improvement, and classifier-positive coverage work. It is not limited to the classifier-positive alignment
 threshold and must not double-count documents that appeared in more than one task-specific or ad hoc batch.
+
+Classifier-improvement retrieval uses a required two-step preflight. The first step reruns the accepted Matter
+Definition target queries against documents not previously processed by the program and not already completed in
+human review. It reports requested and selected counts for every query, exclusions, the exact final population, and
+the resulting batch count. The operator may add a separate HYBRID guidance-expansion query for any low-yield target
+and rerun the preview. Review starts only after the operator confirms the frozen preview; changing a query, batching
+setting, or search-index generation invalidates that preview. Classifier category labels such as `needs_review` are
+never used as document search terms.
 
 Both pinned Q&A models are selected by default. When available for the selected field, the page must also let the
 user add the accepted classifier result and recorded human-review decisions as comparison sources without changing

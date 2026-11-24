@@ -95,7 +95,7 @@ describe("Matter jobs", () => {
     const jobTypes = within(screen.getByRole("navigation", { name: "Job types" }));
     expect(jobTypes.getByRole("link", { name: "Bulk tagging" })).toHaveAttribute("aria-current", "page");
     expect(jobTypes.getByRole("link", { name: "Topic clustering" })).toHaveAttribute("href", `${MATTER_BASE_PATH}/jobs/topic-clustering`);
-    expect(jobTypes.getAllByRole("link")).toHaveLength(7);
+    expect(jobTypes.getAllByRole("link")).toHaveLength(8);
     expect(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByText("Jobs")).toHaveAttribute("aria-current", "page");
 
     navigation.pathname = `${MATTER_BASE_PATH}/jobs/topic-clustering`;

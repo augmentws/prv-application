@@ -105,6 +105,23 @@ const classificationTask = {
   },
 } as const;
 
+const analysisExecutionProfile = {
+  id: "profile-openai-1",
+  matter_analysis_task_version_id: "task-version-1",
+  key: "openai_decisions",
+  name: "OpenAI focused review",
+  decision_provider: "OPENAI_DECISIONS",
+  model_key: "gpt-6-luna",
+  resolved_model: "gpt-6-luna",
+  model_policy: {},
+  required_capabilities: [],
+  skill_definition_version_id: "skill-version-1",
+  provider_adapter_version: "openai-decisions-v1",
+  content_hash: "a".repeat(64),
+  created_by_user_id: "user-1",
+  created_at: "2026-09-26T12:00:00Z",
+} as const;
+
 const analysisRun = {
   id: "analysis-run-1",
   review_batch_id: "batch-1",
@@ -502,6 +519,7 @@ describe("BatchReviewWorkspace", () => {
       } as never;
       if (path.endsWith("/reviewer-coding") && init?.method === "POST") return { id: "coding-1", review_batch_id: "batch-1", reviewer_user_id: "user-1", revision: 0, created_at: "2026-09-15T12:00:00Z", updated_at: "2026-09-15T12:00:00Z" } as never;
       if (path === "/v1/matters/matter-1/analysis-tasks") return [analysisTask, classificationTask] as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/versions/1/execution-profiles") return [analysisExecutionProfile] as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1/analysis-runs" && init?.method === "POST") {
         batchAnalysisJobs = [questionAnsweringJob(analysisRun), ...batchAnalysisJobs];
         return analysisRun as never;
@@ -673,12 +691,17 @@ describe("BatchReviewWorkspace", () => {
     expect(await screen.findByRole("combobox", { name: "Published task" })).toHaveTextContent("Privilege review");
     expect(screen.getAllByText("OpenAI Decisions").length).toBeGreaterThan(0);
     expect(screen.getByText("gpt-6-luna")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Execution profile / model" }));
+    await user.click(screen.getByRole("option", { name: /OpenAI focused review.*gpt-6-luna/i }));
     expect(screen.getByText("A newer draft is not published")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Run on 1 documents" }));
 
     await waitFor(() => {
       const launchCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/analysis-runs") && init?.method === "POST");
-      expect(JSON.parse(String(launchCall?.[1]?.body))).toEqual({ matter_analysis_task_id: "task-1" });
+      expect(JSON.parse(String(launchCall?.[1]?.body))).toEqual({
+        matter_analysis_task_id: "task-1",
+        execution_profile_id: "profile-openai-1",
+      });
     });
     expect(await screen.findByRole("combobox", { name: "Analysis run" })).toHaveTextContent("Privilege review · published v1");
     expect(screen.queryByText("Published v1 · OpenAI Decisions · gpt-6-luna · isolated results")).not.toBeInTheDocument();

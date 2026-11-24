@@ -14,15 +14,15 @@ export interface ReviewProgramClassifierImprovementSetup {
      */
   preview_hash: string;
   /**
+     * @minLength 64
+     * @maxLength 64
+     */
+  retrieval_preview_hash: string;
+  /**
      * @minItems 1
      * @maxItems 100
      */
   queries: ReviewProgramClassifierImprovementQuery[];
-  /**
-     * @minimum 0
-     * @maximum 25000
-     */
-  control_sample_size?: number;
   /**
      * @minimum 1
      * @maximum 10000

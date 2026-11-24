@@ -1,14 +1,16 @@
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import jwt
 import pytest
-from conftest import create_client_tenant
+from conftest import ArtifactTestingSessionLocal, create_client_tenant, memory_storage
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.schemas import MatterDocumentSelection
+from artifact_service import text_processing
 from artifact_service.api import MAX_DATE_HISTOGRAM_BUCKETS, _fill_date_buckets
 from artifact_service.config import get_artifact_settings
 from artifact_service.schemas import (
@@ -224,6 +226,29 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
         }
     ]
 
+    identity_metadata_response = client.post(
+        "/v1/collection-items/identity-metadata",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [payload["item"]["id"]],
+        },
+    )
+    assert identity_metadata_response.status_code == 200, identity_metadata_response.text
+    assert identity_metadata_response.json() == [
+        {
+            "item_id": payload["item"]["id"],
+            "sender": {"email_address": "phillip.allen@enron.com", "display_name": None},
+            "recipients": {
+                "TO": [{"email_address": "tim.belden@enron.com", "display_name": None}],
+                "CC": [],
+                "BCC": [],
+            },
+        }
+    ]
+    assert "subject" not in identity_metadata_response.text.casefold()
+
     input_response = client.post(
         "/v1/collection-items/analysis-input-snapshots",
         headers=auth(root_token),
@@ -380,6 +405,7 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
             {
                 "item_id": payload["item"]["id"],
                 "source_item_id": metadata["source_item_id"],
+                "family_id": None,
             }
         ],
         "next_after_source_item_id": None,
@@ -652,7 +678,11 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
     assert [item["item_id"] for item in batch.json()["items"]] == [collected_file.json()["item"]["id"]]
 
 
-def test_collection_text_processing_profile_test_and_run(client: TestClient, root_token: str) -> None:
+def test_collection_text_processing_profile_test_and_run(
+    client: TestClient,
+    root_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
@@ -771,6 +801,27 @@ def test_collection_text_processing_profile_test_and_run(client: TestClient, roo
     )
     assert history.status_code == 200, history.text
     assert [value["id"] for value in history.json()] == [run.json()["id"]]
+
+    monkeypatch.setattr(text_processing, "ArtifactSessionLocal", ArtifactTestingSessionLocal)
+    monkeypatch.setattr(text_processing, "get_storage", lambda: memory_storage)
+    monkeypatch.setattr(
+        text_processing,
+        "get_artifact_settings",
+        lambda: SimpleNamespace(text_processing_chunk_size=10, text_processing_concurrency=2),
+    )
+    text_processing.process_run(uuid.UUID(run.json()["id"]))
+
+    completed = client.get(
+        f"/v1/collections/{collection_id}/text-processing/runs",
+        headers=auth(root_token),
+    ).json()[0]
+    assert completed["status"] == "COMPLETED"
+    assert completed["total_count"] == 1
+    assert completed["processed_count"] == 1
+    assert completed["created_count"] == 1
+    assert completed["reused_count"] == 0
+    assert completed["skipped_count"] == 0
+    assert completed["failed_count"] == 0
 
 
 def test_text_processing_removes_blocks_and_replaces_matches() -> None:

@@ -622,6 +622,7 @@ def read_classification_target_distribution(
             definition_id=target_metadata_definition_id,
             training_scope=payload.training_scope,
             hierarchy_level=payload.hierarchy_level,
+            label_source=payload.label_source,
         )
     except ClassificationModelCommandError as exc:
         raise command_error(exc) from exc

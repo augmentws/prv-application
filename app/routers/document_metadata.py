@@ -296,7 +296,11 @@ def create_document_metadata_event(
                 db,
                 matter_id=matter.id,
                 kind="DOCUMENT_UPSERT",
-                payload={"document_ids": [str(document.id)]},
+                payload={
+                    "document_ids": [str(document.id)],
+                    "metadata_definition_ids": [str(definition.id)],
+                    "projection_scope": "MATTER_CODING_FIELDS",
+                },
                 created_by_user_id=principal.user.id,
             )
             search_operation_id = search_operation.id

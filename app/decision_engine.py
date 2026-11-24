@@ -98,6 +98,14 @@ class DecisionUsage(DecisionModel):
     output_tokens: int = Field(default=0, ge=0)
 
 
+class DecisionEvidenceBinding(DecisionModel):
+    """Connect typed evidence companions to their primary decision question."""
+
+    question_key: str = Field(min_length=1, max_length=500)
+    exists_question_key: str = Field(min_length=1, max_length=500)
+    location_question_key: str = Field(min_length=1, max_length=500)
+
+
 class DecisionRequest(DecisionModel):
     state: Any
     questions: dict[str, DecisionQuestion] = Field(min_length=1, max_length=500)
@@ -107,6 +115,22 @@ class DecisionRequest(DecisionModel):
     run_id: str | None = Field(default=None, max_length=500)
     request_type: str = Field(default="system-one-decision", min_length=1, max_length=100)
     idempotency_key: str | None = Field(default=None, max_length=500)
+    evidence_bindings: dict[str, DecisionEvidenceBinding] = Field(default_factory=dict, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_evidence_bindings(self) -> DecisionRequest:
+        for key, binding in self.evidence_bindings.items():
+            if key != binding.question_key:
+                raise ValueError("evidence binding key must match question_key")
+            required = {
+                binding.question_key,
+                binding.exists_question_key,
+                binding.location_question_key,
+            }
+            missing = sorted(required - set(self.questions))
+            if missing:
+                raise ValueError(f"evidence binding references missing questions: {missing}")
+        return self
 
 
 class DecisionEnvelope(DecisionModel):

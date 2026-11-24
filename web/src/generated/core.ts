@@ -100,6 +100,8 @@ import type {
   CollectionItemAnalysisInputSnapshotsRequest,
   CollectionItemGroupingSnapshot,
   CollectionItemGroupingSnapshotsRequest,
+  CollectionItemIdentityMetadata,
+  CollectionItemIdentityMetadataRequest,
   CollectionItemIdentityPage,
   CollectionItemRead,
   CollectionItemRelationshipReconcileRequest,
@@ -122,6 +124,7 @@ import type {
   CollectionTextProcessingTestRequest,
   CollectionTextProcessingTestResponse,
   CompareReviewBatchRunsV1MattersMatterIdReviewBatchesBatchIdComparisonsGetParams,
+  ComparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetParams,
   CountMatterDocumentsV1MattersMatterIdDocumentsCountGet200,
   CreateReviewBatchSearchExportV1MattersMatterIdReviewBatchesBatchIdSearchExportsPostParams,
   CustodianCreate,
@@ -170,6 +173,7 @@ import type {
   ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams,
   ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams,
   ListCollectionItemsV1CollectionsCollectionIdItemsGetParams,
+  ListComparisonsV1MattersMatterIdCodingComparisonsGetParams,
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
   ListEntitiesV1MattersMatterIdEntitiesGetParams,
@@ -179,11 +183,14 @@ import type {
   ListFailedJobDocumentsV1JobsJobTypeJobIdFailedDocumentsGetParams,
   ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams,
   ListGuidanceV1MattersMatterIdGuidanceGetParams,
+  ListIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetParams,
+  ListIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetParams,
   ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListNotificationsV1NotificationsGetParams,
   ListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams,
+  ListRelationshipsV1MattersMatterIdEntityRelationshipsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
   ListReviewProgramsV1MattersMatterIdReviewProgramsGetParams,
   ListSearchExportArtifactsV1MattersMatterIdSearchExportsArtifactsGetParams,
@@ -205,6 +212,10 @@ import type {
   MatterBulkTagJobRead,
   MatterBulkTagPreviewRequest,
   MatterBulkTagPreviewResponse,
+  MatterCodingComparisonCreate,
+  MatterCodingComparisonDocumentPage,
+  MatterCodingComparisonOptionsRead,
+  MatterCodingComparisonRead,
   MatterCreate,
   MatterDateHistogramRequest,
   MatterDateHistogramResponse,
@@ -225,6 +236,7 @@ import type {
   MatterDefinitionUpdate,
   MatterDeletionJobRead,
   MatterDocumentFactRead,
+  MatterDocumentFamilyRead,
   MatterDocumentImportCreate,
   MatterDocumentImportRead,
   MatterDocumentMetadataImportCreate,
@@ -237,6 +249,10 @@ import type {
   MatterEntityMerge,
   MatterEntityPage,
   MatterEntityRead,
+  MatterEntityRelationshipAction,
+  MatterEntityRelationshipCreate,
+  MatterEntityRelationshipDefinitionRead,
+  MatterEntityRelationshipRead,
   MatterEntityUpdate,
   MatterEntityVariantCreate,
   MatterFacetValuesRequest,
@@ -258,6 +274,11 @@ import type {
   MatterFactSuggestionDismiss,
   MatterFactSuggestionRead,
   MatterFactUpdate,
+  MatterIdentityAnalysisRead,
+  MatterIdentityDomainDecisionCreate,
+  MatterIdentityDomainDecisionRead,
+  MatterIdentityDomainRecommendationPage,
+  MatterIdentityRecommendationRunRead,
   MatterOverviewCounts,
   MatterProviderUsageReportRead,
   MatterQuestionAnsweringJobRead,
@@ -293,6 +314,7 @@ import type {
   NotificationPage,
   PermissionRead,
   PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams,
+  PrivilegeFamilyContextPrepare,
   QuestionAnsweringWholeMatterRunCreate,
   ReadProgramFinalAlignmentV1MattersMatterIdReviewProgramsProgramIdRunsRunIdFinalAlignmentGetParams,
   ReadProgramQaPopulationStatisticsV1MattersMatterIdReviewProgramsProgramIdRunsRunIdQaPopulationStatisticsGetParams,
@@ -311,6 +333,8 @@ import type {
   ReviewBatchComparisonRead,
   ReviewBatchComparisonRequest,
   ReviewBatchComparisonSourceOptionRead,
+  ReviewBatchCompositePreviewRead,
+  ReviewBatchCompositePreviewRequest,
   ReviewBatchCreate,
   ReviewBatchDisagreementBatchCreate,
   ReviewBatchDisagreementBatchPreviewRead,
@@ -337,6 +361,8 @@ import type {
   ReviewBatchStatisticsRead,
   ReviewDecisionResultRead,
   ReviewProgramActionResolve,
+  ReviewProgramClassifierImprovementPreview,
+  ReviewProgramClassifierImprovementPreviewRead,
   ReviewProgramClassifierImprovementSetup,
   ReviewProgramCompletionReportRead,
   ReviewProgramCreate,
@@ -8107,6 +8133,58 @@ export const getMatterDocumentCollectionItemV1MattersMatterIdDocumentsDocumentId
 
 
 
+export type getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse200 = {
+  data: MatterDocumentFamilyRead
+  status: 200
+}
+
+export type getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponseSuccess = (getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse200) & {
+  headers: Headers;
+};
+export type getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponseError = (getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse422) & {
+  headers: Headers;
+};
+
+export type getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse = (getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponseSuccess | getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponseError)
+
+export const getGetMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetUrl = (matterId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/documents/${documentId}/family`
+}
+
+/**
+ * @summary Get Matter Document Family
+ */
+export const getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGet = async (matterId: string,
+    documentId: string, options?: RequestInit): Promise<getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse> => {
+
+  const res = await fetch(getGetMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetUrl(matterId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getMatterDocumentFamilyV1MattersMatterIdDocumentsDocumentIdFamilyGetResponse
+}
+
+
+
 export type getMatterDocumentContentV1MattersMatterIdDocumentsDocumentIdContentGetResponse200 = {
   data: unknown
   status: 200
@@ -8870,6 +8948,293 @@ export const getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingH
 
   const data: getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse
+}
+
+
+
+export type comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse200 = {
+  data: MatterCodingComparisonOptionsRead
+  status: 200
+}
+
+export type comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponseSuccess = (comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse200) & {
+  headers: Headers;
+};
+export type comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponseError = (comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse = (comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponseSuccess | comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponseError)
+
+export const getComparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/coding-comparisons/options`
+}
+
+/**
+ * @summary Comparison Options
+ */
+export const comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGet = async (matterId: string, options?: RequestInit): Promise<comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse> => {
+
+  const res = await fetch(getComparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetUrl(matterId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as comparisonOptionsV1MattersMatterIdCodingComparisonsOptionsGetResponse
+}
+
+
+
+export type startComparisonV1MattersMatterIdCodingComparisonsPostResponse202 = {
+  data: MatterCodingComparisonRead
+  status: 202
+}
+
+export type startComparisonV1MattersMatterIdCodingComparisonsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startComparisonV1MattersMatterIdCodingComparisonsPostResponseSuccess = (startComparisonV1MattersMatterIdCodingComparisonsPostResponse202) & {
+  headers: Headers;
+};
+export type startComparisonV1MattersMatterIdCodingComparisonsPostResponseError = (startComparisonV1MattersMatterIdCodingComparisonsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startComparisonV1MattersMatterIdCodingComparisonsPostResponse = (startComparisonV1MattersMatterIdCodingComparisonsPostResponseSuccess | startComparisonV1MattersMatterIdCodingComparisonsPostResponseError)
+
+export const getStartComparisonV1MattersMatterIdCodingComparisonsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/coding-comparisons`
+}
+
+/**
+ * @summary Start Comparison
+ */
+export const startComparisonV1MattersMatterIdCodingComparisonsPost = async (matterId: string,
+    matterCodingComparisonCreate: MatterCodingComparisonCreate, options?: RequestInit): Promise<startComparisonV1MattersMatterIdCodingComparisonsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartComparisonV1MattersMatterIdCodingComparisonsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterCodingComparisonCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startComparisonV1MattersMatterIdCodingComparisonsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startComparisonV1MattersMatterIdCodingComparisonsPostResponse
+}
+
+
+
+export type listComparisonsV1MattersMatterIdCodingComparisonsGetResponse200 = {
+  data: MatterCodingComparisonRead[]
+  status: 200
+}
+
+export type listComparisonsV1MattersMatterIdCodingComparisonsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listComparisonsV1MattersMatterIdCodingComparisonsGetResponseSuccess = (listComparisonsV1MattersMatterIdCodingComparisonsGetResponse200) & {
+  headers: Headers;
+};
+export type listComparisonsV1MattersMatterIdCodingComparisonsGetResponseError = (listComparisonsV1MattersMatterIdCodingComparisonsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listComparisonsV1MattersMatterIdCodingComparisonsGetResponse = (listComparisonsV1MattersMatterIdCodingComparisonsGetResponseSuccess | listComparisonsV1MattersMatterIdCodingComparisonsGetResponseError)
+
+export const getListComparisonsV1MattersMatterIdCodingComparisonsGetUrl = (matterId: string,
+    params?: ListComparisonsV1MattersMatterIdCodingComparisonsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/coding-comparisons?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/coding-comparisons`
+}
+
+/**
+ * @summary List Comparisons
+ */
+export const listComparisonsV1MattersMatterIdCodingComparisonsGet = async (matterId: string,
+    params?: ListComparisonsV1MattersMatterIdCodingComparisonsGetParams, options?: RequestInit): Promise<listComparisonsV1MattersMatterIdCodingComparisonsGetResponse> => {
+
+  const res = await fetch(getListComparisonsV1MattersMatterIdCodingComparisonsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listComparisonsV1MattersMatterIdCodingComparisonsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listComparisonsV1MattersMatterIdCodingComparisonsGetResponse
+}
+
+
+
+export type getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse200 = {
+  data: MatterCodingComparisonRead
+  status: 200
+}
+
+export type getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponseSuccess = (getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse200) & {
+  headers: Headers;
+};
+export type getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponseError = (getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse = (getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponseSuccess | getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponseError)
+
+export const getGetComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetUrl = (matterId: string,
+    comparisonId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/coding-comparisons/${comparisonId}`
+}
+
+/**
+ * @summary Get Comparison
+ */
+export const getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGet = async (matterId: string,
+    comparisonId: string, options?: RequestInit): Promise<getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse> => {
+
+  const res = await fetch(getGetComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetUrl(matterId,comparisonId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getComparisonV1MattersMatterIdCodingComparisonsComparisonIdGetResponse
+}
+
+
+
+export type comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse200 = {
+  data: MatterCodingComparisonDocumentPage
+  status: 200
+}
+
+export type comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponseSuccess = (comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse200) & {
+  headers: Headers;
+};
+export type comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponseError = (comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse422) & {
+  headers: Headers;
+};
+
+export type comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse = (comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponseSuccess | comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponseError)
+
+export const getComparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetUrl = (matterId: string,
+    comparisonId: string,
+    params?: ComparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/coding-comparisons/${comparisonId}/documents?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/coding-comparisons/${comparisonId}/documents`
+}
+
+/**
+ * @summary Comparison Documents
+ */
+export const comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGet = async (matterId: string,
+    comparisonId: string,
+    params?: ComparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetParams, options?: RequestInit): Promise<comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse> => {
+
+  const res = await fetch(getComparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetUrl(matterId,comparisonId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as comparisonDocumentsV1MattersMatterIdCodingComparisonsComparisonIdDocumentsGetResponse
 }
 
 
@@ -11122,6 +11487,71 @@ const res = await fetch(getExecuteSavedSearchV1MattersMatterIdSavedSearchesSaved
 
   const data: executeSavedSearchV1MattersMatterIdSavedSearchesSavedSearchIdExecutePostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as executeSavedSearchV1MattersMatterIdSavedSearchesSavedSearchIdExecutePostResponse
+}
+
+
+
+export type previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse200 = {
+  data: ReviewBatchCompositePreviewRead
+  status: 200
+}
+
+export type previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponseSuccess = (previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponseError = (previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse = (previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponseSuccess | previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponseError)
+
+export const getPreviewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/composite-preview`
+}
+
+/**
+ * @summary Preview Composite Review Batch
+ */
+export const previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPost = async (matterId: string,
+    reviewBatchCompositePreviewRequest: ReviewBatchCompositePreviewRequest, options?: RequestInit): Promise<previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewBatchCompositePreviewRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewCompositeReviewBatchV1MattersMatterIdReviewBatchesCompositePreviewPostResponse
 }
 
 
@@ -14121,6 +14551,73 @@ export const readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGet = asyn
 
 
 
+export type prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse200 = {
+  data: ReviewProgramRead
+  status: 200
+}
+
+export type prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponseSuccess = (prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse200) & {
+  headers: Headers;
+};
+export type prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponseError = (prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse422) & {
+  headers: Headers;
+};
+
+export type prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse = (prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponseSuccess | prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponseError)
+
+export const getPrepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostUrl = (matterId: string,
+    programId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/privilege-family-context`
+}
+
+/**
+ * @summary Prepare Program Privilege Family Context
+ */
+export const prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPost = async (matterId: string,
+    programId: string,
+    privilegeFamilyContextPrepare: PrivilegeFamilyContextPrepare, options?: RequestInit): Promise<prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPrepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostUrl(matterId,programId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(privilegeFamilyContextPrepare)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as prepareProgramPrivilegeFamilyContextV1MattersMatterIdReviewProgramsProgramIdPrivilegeFamilyContextPostResponse
+}
+
+
+
 export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse200 = {
   data: ReviewProgramRunRead[]
   status: 200
@@ -14700,6 +15197,77 @@ const res = await fetch(getSetupProgramDiscoveryV1MattersMatterIdReviewProgramsP
 
   const data: setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse
+}
+
+
+
+export type previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse200 = {
+  data: ReviewProgramClassifierImprovementPreviewRead
+  status: 200
+}
+
+export type previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponseSuccess = (previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponseError = (previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse = (previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponseSuccess | previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponseError)
+
+export const getPreviewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/classifier-improvement-preview`
+}
+
+/**
+ * @summary Preview Program Classifier Improvement
+ */
+export const previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramClassifierImprovementPreview: ReviewProgramClassifierImprovementPreview, options?: RequestInit): Promise<previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramClassifierImprovementPreview)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementPreviewPostResponse
 }
 
 
@@ -16042,6 +16610,58 @@ export const retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFa
 
   const data: retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse
+}
+
+
+
+export type retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse202 = {
+  data: SearchProjectionOperationRead
+  status: 202
+}
+
+export type retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponseSuccess = (retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse202) & {
+  headers: Headers;
+};
+export type retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponseError = (retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse422) & {
+  headers: Headers;
+};
+
+export type retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse = (retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponseSuccess | retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponseError)
+
+export const getRetrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostUrl = (matterId: string,
+    operationId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/search-operations/${operationId}/retry`
+}
+
+/**
+ * @summary Retry Search Operation
+ */
+export const retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPost = async (matterId: string,
+    operationId: string, options?: RequestInit): Promise<retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse> => {
+
+  const res = await fetch(getRetrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostUrl(matterId,operationId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retrySearchOperationV1MattersMatterIdSearchOperationsOperationIdRetryPostResponse
 }
 
 
@@ -19820,6 +20440,719 @@ const res = await fetch(getUnmergeMatterEntityV1MattersMatterIdEntitiesEntityIdU
 
 
 
+export type listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse200 = {
+  data: MatterEntityRelationshipDefinitionRead[]
+  status: 200
+}
+
+export type listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponseSuccess = (listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse200) & {
+  headers: Headers;
+};
+export type listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponseError = (listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse = (listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponseSuccess | listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponseError)
+
+export const getListRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/entity-relationships/types`
+}
+
+/**
+ * @summary List Relationship Types
+ */
+export const listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGet = async (matterId: string, options?: RequestInit): Promise<listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse> => {
+
+  const res = await fetch(getListRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetUrl(matterId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listRelationshipTypesV1MattersMatterIdEntityRelationshipsTypesGetResponse
+}
+
+
+
+export type listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse200 = {
+  data: MatterEntityRelationshipRead[]
+  status: 200
+}
+
+export type listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponseSuccess = (listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse200) & {
+  headers: Headers;
+};
+export type listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponseError = (listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse = (listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponseSuccess | listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponseError)
+
+export const getListRelationshipsV1MattersMatterIdEntityRelationshipsGetUrl = (matterId: string,
+    params?: ListRelationshipsV1MattersMatterIdEntityRelationshipsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["status"];
+
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? 'null' : String(v));
+      });
+      return;
+    }
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/entity-relationships?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/entity-relationships`
+}
+
+/**
+ * @summary List Relationships
+ */
+export const listRelationshipsV1MattersMatterIdEntityRelationshipsGet = async (matterId: string,
+    params?: ListRelationshipsV1MattersMatterIdEntityRelationshipsGetParams, options?: RequestInit): Promise<listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse> => {
+
+  const res = await fetch(getListRelationshipsV1MattersMatterIdEntityRelationshipsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listRelationshipsV1MattersMatterIdEntityRelationshipsGetResponse
+}
+
+
+
+export type createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse201 = {
+  data: MatterEntityRelationshipRead
+  status: 201
+}
+
+export type createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createRelationshipV1MattersMatterIdEntityRelationshipsPostResponseSuccess = (createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse201) & {
+  headers: Headers;
+};
+export type createRelationshipV1MattersMatterIdEntityRelationshipsPostResponseError = (createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse = (createRelationshipV1MattersMatterIdEntityRelationshipsPostResponseSuccess | createRelationshipV1MattersMatterIdEntityRelationshipsPostResponseError)
+
+export const getCreateRelationshipV1MattersMatterIdEntityRelationshipsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/entity-relationships`
+}
+
+/**
+ * @summary Create Relationship
+ */
+export const createRelationshipV1MattersMatterIdEntityRelationshipsPost = async (matterId: string,
+    matterEntityRelationshipCreate: MatterEntityRelationshipCreate, options?: RequestInit): Promise<createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateRelationshipV1MattersMatterIdEntityRelationshipsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterEntityRelationshipCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createRelationshipV1MattersMatterIdEntityRelationshipsPostResponse
+}
+
+
+
+export type confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse200 = {
+  data: MatterEntityRelationshipRead
+  status: 200
+}
+
+export type confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponseSuccess = (confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse200) & {
+  headers: Headers;
+};
+export type confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponseError = (confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse422) & {
+  headers: Headers;
+};
+
+export type confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse = (confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponseSuccess | confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponseError)
+
+export const getConfirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostUrl = (matterId: string,
+    relationshipId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/entity-relationships/${relationshipId}/confirm`
+}
+
+/**
+ * @summary Confirm Relationship
+ */
+export const confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPost = async (matterId: string,
+    relationshipId: string,
+    matterEntityRelationshipAction: MatterEntityRelationshipAction, options?: RequestInit): Promise<confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getConfirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostUrl(matterId,relationshipId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterEntityRelationshipAction)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as confirmRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdConfirmPostResponse
+}
+
+
+
+export type rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse200 = {
+  data: MatterEntityRelationshipRead
+  status: 200
+}
+
+export type rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponseSuccess = (rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse200) & {
+  headers: Headers;
+};
+export type rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponseError = (rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse422) & {
+  headers: Headers;
+};
+
+export type rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse = (rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponseSuccess | rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponseError)
+
+export const getRejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostUrl = (matterId: string,
+    relationshipId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/entity-relationships/${relationshipId}/reject`
+}
+
+/**
+ * @summary Reject Relationship
+ */
+export const rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPost = async (matterId: string,
+    relationshipId: string,
+    matterEntityRelationshipAction: MatterEntityRelationshipAction, options?: RequestInit): Promise<rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostUrl(matterId,relationshipId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterEntityRelationshipAction)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as rejectRelationshipV1MattersMatterIdEntityRelationshipsRelationshipIdRejectPostResponse
+}
+
+
+
+export type startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse202 = {
+  data: MatterIdentityAnalysisRead
+  status: 202
+}
+
+export type startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponseSuccess = (startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse202) & {
+  headers: Headers;
+};
+export type startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponseError = (startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse = (startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponseSuccess | startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponseError)
+
+export const getStartIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/identity-analysis-jobs`
+}
+
+/**
+ * @summary Start Identity Analysis
+ */
+export const startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPost = async (matterId: string, options?: RequestInit): Promise<startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse> => {
+
+  const res = await fetch(getStartIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsPostResponse
+}
+
+
+
+export type listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse200 = {
+  data: MatterIdentityAnalysisRead[]
+  status: 200
+}
+
+export type listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponseSuccess = (listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse200) & {
+  headers: Headers;
+};
+export type listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponseError = (listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse = (listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponseSuccess | listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponseError)
+
+export const getListIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetUrl = (matterId: string,
+    params?: ListIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/identity-analysis-jobs?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/identity-analysis-jobs`
+}
+
+/**
+ * @summary List Identity Analyses
+ */
+export const listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGet = async (matterId: string,
+    params?: ListIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetParams, options?: RequestInit): Promise<listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse> => {
+
+  const res = await fetch(getListIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listIdentityAnalysesV1MattersMatterIdIdentityAnalysisJobsGetResponse
+}
+
+
+
+export type getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse200 = {
+  data: MatterIdentityAnalysisRead
+  status: 200
+}
+
+export type getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponseSuccess = (getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse200) & {
+  headers: Headers;
+};
+export type getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponseError = (getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse = (getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponseSuccess | getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponseError)
+
+export const getGetIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetUrl = (matterId: string,
+    analysisId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}`
+}
+
+/**
+ * @summary Get Identity Analysis
+ */
+export const getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGet = async (matterId: string,
+    analysisId: string, options?: RequestInit): Promise<getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse> => {
+
+  const res = await fetch(getGetIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetUrl(matterId,analysisId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getIdentityAnalysisV1MattersMatterIdIdentityAnalysisJobsAnalysisIdGetResponse
+}
+
+
+
+export type startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse202 = {
+  data: MatterIdentityRecommendationRunRead
+  status: 202
+}
+
+export type startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponseSuccess = (startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponseError = (startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse = (startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponseSuccess | startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponseError)
+
+export const getStartIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostUrl = (matterId: string,
+    analysisId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}/domain-recommendation-runs`
+}
+
+/**
+ * @summary Start Identity Domain Recommendations
+ */
+export const startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPost = async (matterId: string,
+    analysisId: string, options?: RequestInit): Promise<startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse> => {
+
+  const res = await fetch(getStartIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostUrl(matterId,analysisId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsPostResponse
+}
+
+
+
+export type listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse200 = {
+  data: MatterIdentityRecommendationRunRead[]
+  status: 200
+}
+
+export type listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponseSuccess = (listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse200) & {
+  headers: Headers;
+};
+export type listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponseError = (listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse = (listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponseSuccess | listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponseError)
+
+export const getListIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetUrl = (matterId: string,
+    analysisId: string,
+    params?: ListIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}/domain-recommendation-runs?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}/domain-recommendation-runs`
+}
+
+/**
+ * @summary List Identity Domain Recommendations
+ */
+export const listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGet = async (matterId: string,
+    analysisId: string,
+    params?: ListIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetParams, options?: RequestInit): Promise<listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse> => {
+
+  const res = await fetch(getListIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetUrl(matterId,analysisId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsGetResponse
+}
+
+
+
+export type getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse200 = {
+  data: MatterIdentityDomainRecommendationPage
+  status: 200
+}
+
+export type getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponseSuccess = (getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse200) & {
+  headers: Headers;
+};
+export type getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponseError = (getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse422) & {
+  headers: Headers;
+};
+
+export type getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse = (getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponseSuccess | getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponseError)
+
+export const getGetIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetUrl = (matterId: string,
+    analysisId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}/domain-recommendation-runs/${runId}/recommendations`
+}
+
+/**
+ * @summary Get Identity Domain Recommendations
+ */
+export const getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGet = async (matterId: string,
+    analysisId: string,
+    runId: string, options?: RequestInit): Promise<getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse> => {
+
+  const res = await fetch(getGetIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetUrl(matterId,analysisId,runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getIdentityDomainRecommendationsV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdRecommendationsGetResponse
+}
+
+
+
+export type decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse200 = {
+  data: MatterIdentityDomainDecisionRead
+  status: 200
+}
+
+export type decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponseSuccess = (decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse200) & {
+  headers: Headers;
+};
+export type decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponseError = (decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse422) & {
+  headers: Headers;
+};
+
+export type decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse = (decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponseSuccess | decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponseError)
+
+export const getDecideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostUrl = (matterId: string,
+    analysisId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/identity-analysis-jobs/${analysisId}/domain-recommendation-runs/${runId}/decisions`
+}
+
+/**
+ * @summary Decide Identity Domain Recommendation
+ */
+export const decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPost = async (matterId: string,
+    analysisId: string,
+    runId: string,
+    matterIdentityDomainDecisionCreate: MatterIdentityDomainDecisionCreate, options?: RequestInit): Promise<decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getDecideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostUrl(matterId,analysisId,runId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterIdentityDomainDecisionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as decideIdentityDomainRecommendationV1MattersMatterIdIdentityAnalysisJobsAnalysisIdDomainRecommendationRunsRunIdDecisionsPostResponse
+}
+
+
+
 export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse201 = {
   data: MatterFactExportRead
   status: 201
@@ -21637,6 +22970,71 @@ const res = await fetch(getGetCollectionItemGroupingSnapshotsV1CollectionItemsGr
 
   const data: getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse
+}
+
+
+
+export type getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse200 = {
+  data: CollectionItemIdentityMetadata[]
+  status: 200
+}
+
+export type getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponseSuccess = (getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse200) & {
+  headers: Headers;
+};
+export type getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponseError = (getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse = (getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponseSuccess | getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponseError)
+
+export const getGetCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/collection-items/identity-metadata`
+}
+
+/**
+ * Batch-read structured participants without returning subject or content.
+ * @summary Get Collection Item Identity Metadata
+ */
+export const getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPost = async (collectionItemIdentityMetadataRequest: CollectionItemIdentityMetadataRequest, options?: RequestInit): Promise<getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getGetCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemIdentityMetadataRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionItemIdentityMetadataV1CollectionItemsIdentityMetadataPostResponse
 }
 
 

@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 
 from app.agent_events import agent_event_lifespan
 from app.config import get_settings
+from app.database import engine
+from app.database_engine import pool_metrics_snapshot
 from app.deployment_policy import load_core_runtime_settings
 from app.routers import (
     agent_conversations,
@@ -16,11 +18,14 @@ from app.routers import (
     bulk_tags,
     classification_models,
     clients,
+    coding_comparisons,
     coding_history,
     collection_deletions,
     document_metadata,
+    entity_relationships,
     fact_exports,
     facts,
+    identity_analysis,
     job_executions,
     job_outcomes,
     managed_skills,
@@ -77,8 +82,12 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 
 
 @app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict:
+    metrics = pool_metrics_snapshot(engine)
+    return {
+        "status": "ok",
+        "database_pool": metrics.__dict__ if metrics is not None else None,
+    }
 
 
 app.include_router(auth.router)
@@ -98,6 +107,7 @@ app.include_router(matter_imports.router)
 app.include_router(matter_embeddings.router)
 app.include_router(matter_topics.router)
 app.include_router(coding_history.router)
+app.include_router(coding_comparisons.router)
 app.include_router(document_metadata.router)
 app.include_router(job_executions.router)
 app.include_router(job_outcomes.router)
@@ -118,6 +128,8 @@ app.include_router(matter_definition_assessments.guidance_router)
 app.include_router(facts.router)
 app.include_router(facts.document_router)
 app.include_router(matter_entities.router)
+app.include_router(entity_relationships.router)
+app.include_router(identity_analysis.router)
 app.include_router(fact_exports.router)
 if get_settings().artifact_mode == "embedded":
     app.include_router(build_artifact_router(get_embedded_artifact_principal))

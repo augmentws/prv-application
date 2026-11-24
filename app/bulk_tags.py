@@ -254,9 +254,27 @@ def snapshot_bulk_tag_scope(job_id: uuid.UUID) -> list[uuid.UUID]:
         return [batch.id for batch in batches]
 
 
-def _ensure_batch_search_operation(job: MatterBulkTagJob, batch: MatterBulkTagBatch) -> uuid.UUID:
+def _ensure_batch_search_operation(job: MatterBulkTagJob, batch: MatterBulkTagBatch) -> uuid.UUID | None:
     workflow_id = f"bulk-tag-index:{batch.id}"
     with SessionLocal() as db:
+        assignments = job.assignments or [
+            {"metadata_definition_id": str(job.metadata_definition_id), "value": job.value}
+        ]
+        requested_definition_ids = [
+            uuid.UUID(str(assignment["metadata_definition_id"])) for assignment in assignments
+        ]
+        searchable_definition_ids = list(
+            db.scalars(
+                select(MetadataDefinition.id).where(
+                    MetadataDefinition.matter_id == job.matter_id,
+                    MetadataDefinition.id.in_(requested_definition_ids),
+                    MetadataDefinition.status == "ACTIVE",
+                    MetadataDefinition.searchable.is_(True),
+                )
+            )
+        )
+        if not searchable_definition_ids:
+            return None
         operation = db.scalar(
             select(SearchProjectionOperation).where(SearchProjectionOperation.workflow_id == workflow_id)
         )
@@ -264,7 +282,11 @@ def _ensure_batch_search_operation(job: MatterBulkTagJob, batch: MatterBulkTagBa
             operation = SearchProjectionOperation(
                 matter_id=job.matter_id,
                 kind="DOCUMENT_UPSERT",
-                payload={"document_ids": batch.document_ids},
+                payload={
+                    "document_ids": batch.document_ids,
+                    "metadata_definition_ids": [str(value) for value in searchable_definition_ids],
+                    "projection_scope": "MATTER_CODING_FIELDS",
+                },
                 status="QUEUED",
                 workflow_id=workflow_id,
                 created_by_user_id=job.created_by_user_id,
@@ -381,7 +403,8 @@ def process_bulk_tag_batch(batch_id: uuid.UUID) -> dict[str, int]:
             db.commit()
 
         operation_id = _ensure_batch_search_operation(job, batch)
-        process_search_operation(operation_id)
+        if operation_id is not None:
+            process_search_operation(operation_id)
         batch.status = "COMPLETED"
         db.commit()
         return {

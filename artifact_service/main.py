@@ -3,9 +3,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.database_engine import pool_metrics_snapshot
 from artifact_service.api import build_router
 from artifact_service.auth import get_delegated_artifact_principal
 from artifact_service.config import get_artifact_settings
+from artifact_service.database import artifact_engine
 
 app = FastAPI(
     title="Priv-View Artifact API",
@@ -34,8 +36,12 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 
 
 @app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict:
+    metrics = pool_metrics_snapshot(artifact_engine)
+    return {
+        "status": "ok",
+        "database_pool": metrics.__dict__ if metrics is not None else None,
+    }
 
 
 # Load settings at import so a development secret outside development stops startup.

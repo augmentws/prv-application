@@ -45,6 +45,10 @@ Batch Coding filters accept an inclusive `minimum_confidence` and exclusive `max
 - `RANDOM_MATTER` deterministically orders all current matter documents by the stored seed and optionally takes a sample.
 - `RANDOM_BATCH` applies the same deterministic sampling to an existing ready batch.
 - `RANDOM_SAVED_SEARCH` authorizes and snapshots an accessible Keyword saved search, exhaustively enumerates its matches from the recorded active physical index generation, deterministically orders those IDs by the stored seed, and takes the requested sample. The batch does not depend on the saved-search row after creation.
+- `COMPOSITE_SAVED_SEARCH` snapshots two accessible Keyword saved searches against one physical index generation. Every
+  fixed-search match is retained; fixed matches are removed from the second population before a deterministic seeded
+  sample is selected. The final ordered union is deduplicated and may then be expanded to complete families. Creation
+  requires a preview bound to the saved-search revisions, index generation, sample size, seed, and family policy.
 
 The initial search-query builder supports keyword searches only. Semantic and hybrid batch selection need a separately defined candidate-set policy because approximate vector retrieval is not an exhaustive corpus predicate.
 

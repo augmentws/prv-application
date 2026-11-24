@@ -10,7 +10,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.artifact_gateway import WorkflowArtifactReference, store_workflow_artifact
+from app.artifact_gateway import (
+    WorkflowArtifactReference,
+    copy_workflow_artifact_content,
+    find_workflow_artifact_reference,
+    store_workflow_artifact,
+)
 from app.document_analysis_schemas import (
     DOCUMENT_ANALYSIS_OUTPUT_SCHEMA,
     DOCUMENT_ANALYSIS_PIPELINE_VERSION,
@@ -409,13 +414,33 @@ def store_compatibility_projection_artifact(
     actor_user_id: uuid.UUID,
 ) -> tuple[WorkflowArtifactReference, bool]:
     content = compatibility_projection_bytes(result)
+    derivation_key = compatibility_projection_derivation_key(result)
+    existing = find_workflow_artifact_reference(
+        artifact_type=ArtifactType.ANALYSIS_COMPATIBILITY_RESULT,
+        derivation_key=derivation_key,
+        actor_user_id=actor_user_id,
+        tenant_id=result.tenant_id,
+        client_id=result.client_id,
+    )
+    if existing is not None:
+        destination = BytesIO()
+        copy_workflow_artifact_content(
+            artifact_id=existing.artifact_id,
+            destination=destination,
+            actor_user_id=actor_user_id,
+            tenant_id=result.tenant_id,
+            client_id=result.client_id,
+        )
+        if destination.getvalue() != content or existing.content_hash != sha256(content).hexdigest():
+            raise ValueError("Existing compatibility projection does not match its deterministic identity")
+        return existing, False
     return store_workflow_artifact(
         content=BytesIO(content),
         artifact_type=ArtifactType.ANALYSIS_COMPATIBILITY_RESULT,
         core_scope_kind="MATTER",
         core_scope_id=result.matter_id,
         schema_version=ANALYSIS_COMPATIBILITY_RESULT_SCHEMA_VERSION,
-        derivation_key=compatibility_projection_derivation_key(result),
+        derivation_key=derivation_key,
         content_hash=sha256(content).hexdigest(),
         byte_length=len(content),
         media_type="application/json",

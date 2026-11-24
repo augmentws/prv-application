@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterEntityUpdateOrganizationCategory } from './matterEntityUpdateOrganizationCategory';
 
 /**
  * Only fields present in the request are changed.
@@ -13,6 +14,7 @@ export interface MatterEntityUpdate {
   /** @minimum 1 */
   lock_version: number;
   display_name?: string | null;
+  organization_category?: MatterEntityUpdateOrganizationCategory;
   title?: string | null;
   organization_id?: string | null;
   custodian_id?: string | null;

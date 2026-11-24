@@ -28,19 +28,20 @@ export function AddToMatterDialog({
   selectionDescription: string;
   triggerLabel: string;
   disabled?: boolean;
-  onAdd: (matterId: string) => Promise<void>;
+  onAdd: (matterId: string, includeCompleteFamilies: boolean) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [matterId, setMatterId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [includeCompleteFamilies, setIncludeCompleteFamilies] = useState(true);
 
   async function submit() {
     if (!matterId) return;
     setIsSubmitting(true);
     setError(null);
     try {
-      await onAdd(matterId);
+      await onAdd(matterId, includeCompleteFamilies);
       setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The import job could not be created.");
@@ -62,14 +63,30 @@ export function AddToMatterDialog({
           </DialogDescription>
         </DialogHeader>
         {matters.length ? (
-          <div className="space-y-2">
-            <Label htmlFor="destination-matter">Destination matter</Label>
-            <Select value={matterId} onValueChange={setMatterId}>
-              <SelectTrigger id="destination-matter"><SelectValue placeholder="Choose a matter" /></SelectTrigger>
-              <SelectContent>
-                {matters.map((matter) => <SelectItem key={matter.id} value={matter.id}>{matter.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="destination-matter">Destination matter</Label>
+              <Select value={matterId} onValueChange={setMatterId}>
+                <SelectTrigger id="destination-matter"><SelectValue placeholder="Choose a matter" /></SelectTrigger>
+                <SelectContent>
+                  {matters.map((matter) => <SelectItem key={matter.id} value={matter.id}>{matter.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 accent-primary"
+                checked={includeCompleteFamilies}
+                onChange={(event) => setIncludeCompleteFamilies(event.target.checked)}
+              />
+              <span>
+                <span className="block font-semibold">Include complete families</span>
+                <span className="text-xs text-muted-foreground">
+                  Add the parent email and all attachments whenever any family member matches. Enabled by default.
+                </span>
+              </span>
+            </label>
           </div>
         ) : (
           <p className="rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground">

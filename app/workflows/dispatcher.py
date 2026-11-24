@@ -1,9 +1,11 @@
+import uuid
 from functools import lru_cache
 
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.models import WorkflowRun
 
 
 @lru_cache
@@ -13,6 +15,11 @@ def get_dbos_client() -> DBOSClient:
         system_database_url=settings.dbos_system_database_url or settings.database_url,
         dbos_system_schema=settings.dbos_system_schema,
         application_name=settings.dbos_application_name,
+        system_database_pool_size=settings.dbos_client_system_pool_size,
+        system_database_polling_concurrency=min(
+            settings.dbos_system_polling_concurrency,
+            settings.dbos_client_system_pool_size,
+        ),
     )
 
 
@@ -413,6 +420,61 @@ def enqueue_evidence_assessment(
     )
 
 
+def enqueue_privilege_review_evidence(
+    db: Session,
+    workflow_id: str,
+    *,
+    assessment_id: str,
+    actor_user_id: str,
+    review_program_run_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "privilege_review_evidence_v5",
+        "queue_name": "privilege-review-evidence",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        assessment_id,
+        actor_user_id,
+        review_program_run_id,
+    )
+
+
+def enqueue_privilege_review_adjudication(
+    db: Session,
+    workflow_id: str,
+    *,
+    review_batch_run_id: str,
+    actor_user_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "privilege_review_adjudication_v5",
+        "queue_name": "privilege-review-adjudication",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        review_batch_run_id,
+        actor_user_id,
+    )
+
+
+def cancel_privilege_review_adjudication(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def enqueue_analysis_task_compilation(
     db: Session,
     workflow_id: str,
@@ -464,9 +526,17 @@ def enqueue_analysis_task_batch(db: Session, workflow_id: str, workflow_run_id: 
     settings = get_settings()
     if not settings.dbos_enabled:
         return
+    workflow = db.get(WorkflowRun, uuid.UUID(workflow_run_id))
+    engine_key = (
+        str(workflow.configuration_snapshot.get("engine_key") or "jev").strip().lower() if workflow is not None else ""
+    )
+    queue_name = {
+        "jev": "analysis-task-batches-jev",
+        "openai-decisions": "analysis-task-batches-openai",
+    }.get(engine_key, "analysis-task-batches")
     options: EnqueueOptions = {
-        "workflow_name": "matter_analysis_task_batch_v1",
-        "queue_name": "analysis-task-batches",
+        "workflow_name": "matter_analysis_task_batch_v2",
+        "queue_name": queue_name,
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
     }
@@ -514,7 +584,7 @@ def enqueue_analysis_task_batch_set_run(db: Session, workflow_id: str, run_id: s
     if not settings.dbos_enabled:
         return
     options: EnqueueOptions = {
-        "workflow_name": "analysis_task_batch_set_run_v1",
+        "workflow_name": "analysis_task_batch_set_run_v2",
         "queue_name": "analysis-task-batch-set-runs",
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
@@ -548,6 +618,45 @@ def enqueue_search_export(db: Session, workflow_id: str, job_id: str) -> None:
         "application_name": settings.dbos_application_name,
     }
     get_dbos_client().enqueue_in_transaction(db, options, job_id)
+
+
+def enqueue_coding_comparison(db: Session, workflow_id: str, job_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_coding_comparison_v1",
+        "queue_name": "coding-comparisons",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, job_id)
+
+
+def enqueue_identity_analysis(db: Session, workflow_id: str, analysis_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_identity_analysis_v1",
+        "queue_name": "identity-analysis",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, analysis_id)
+
+
+def enqueue_identity_domain_recommendations(db: Session, workflow_id: str, run_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_identity_domain_recommendations_v1",
+        "queue_name": "identity-domain-recommendations",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, run_id)
 
 
 def cancel_search_export(workflow_id: str) -> None:

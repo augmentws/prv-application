@@ -199,6 +199,26 @@ discarded.
 
 ## Implementation phases
 
+## Implementation status (2026-11-18)
+
+Application-side Phase 1 is implemented for the current high-concurrency
+paths:
+
+- shared named SQLAlchemy engine profiles and explicit Core API, workflow
+  worker, Artifact API, and maintenance budgets;
+- explicit DBOS runtime/client pools and polling concurrency;
+- process-wide worker data-plane backpressure with reserved control capacity;
+- provider, Artifact/S3, embedding, classification-runtime, and search
+  projection transaction boundaries;
+- pool checkout/overflow/invalidation and long-transaction observability;
+- PostgreSQL statement and idle-transaction deadlines;
+- periodic idempotent DBOS/Core terminal-state reconciliation; and
+- a direct-PostgreSQL health monitor and acceptance runbook.
+
+The remaining verification gate is to run the full TREC acceptance workload
+against direct PostgreSQL and record throughput/error results. Phase 2
+PgBouncer work is intentionally deferred.
+
 ### Phase 0: recover and establish a direct-PostgreSQL baseline
 
 1. Keep search projection document concurrency at 2.

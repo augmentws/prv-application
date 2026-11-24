@@ -16,10 +16,18 @@ Choose how to select documents:
 - **Random matter sample** selects a repeatable random sample from the matter.
 - **Random sample from batch** selects from an existing ready batch.
 - **Random sample from saved search** runs an accessible Keyword saved search and samples only its matching documents.
+- **Fixed query + random sample** includes every document from one Keyword saved search and adds a reproducible random
+  sample from another. Documents matched by both searches are included once and removed from the random candidate pool
+  before sampling.
 - **Random sample from assessment** selects from the assessment's complete persisted retrieval candidate pool.
 
 Leaving the random sample size empty includes all source documents in a randomized order. The system stores the random seed, so the selection is reproducible.
 Saved-search samples require a sample size. Priv-View snapshots the saved search definition, its name and update time, the active physical search generation, and the random seed. Later edits or deletion of the saved search do not change the frozen batch.
+
+Composite batches require two saved searches and a random sample size. Select **Preview population** to see fixed
+matches, eligible random candidates, overlap removed, selected random documents, family additions, and the final batch
+size. Creation is disabled until that preview succeeds. If either saved search or the active search generation changes,
+Priv-View requires a new preview rather than silently creating a different population.
 
 Assessment samples also require a sample size. Their source is every document assembled by assessment retrieval, including candidates selected for the assessment batch and candidates that were not selected because of the assessment target size. Priv-View does not rerun retrieval and does not sample only the final assessment batch. The new batch snapshots the assessment identity, name, candidate and selected counts, guidance revision and content hash, search generation, and random seed for provenance.
 
@@ -64,6 +72,12 @@ If the batch uses **Values from all reviewers**, the other reviewers' current va
 ## Batch statistics and human-coding promotion
 
 Select **Statistics** from the Batches table or the batch review header. Statistics always opens in a separate browser tab or window so the active review workspace is preserved. The dedicated page has two views: **Compare coding** for result-set comparison and **Human progress & promotion** for reviewer completion and controlled publication.
+
+For a comparison that spans more than one batch or uses different coding fields, select **Compare coding** at the top of the matter's Batches page. Select the ready batches that define the population, then select completed Q&A runs, pinned reviewer coding (including imported coding), current matter coding, and/or a completed whole-matter classifier scoring run. Documents appearing in more than one selected batch are counted once. When fields use different value vocabularies, map each source value to a shared comparison value—for example, map Boolean **True** to an enum's **Privileged** value and **False** to **Not privileged**.
+
+Each source has an explicit canonical value mapping. Use it to align values such as Boolean `true` with an enum value such as `privileged` without copying either source into the other field. A value omitted from an explicit mapping is reported as **Unmapped**; missing, failed, skipped, conflicted, and incomplete source states are also reported separately and never count as negative coding. The completed view reports source coverage, pairwise agreement, and a document matrix.
+
+Cross-batch comparisons run as durable jobs. Core stores one small operational record and summary per comparison. The deduplicated population and complete document matrix are immutable Parquet artifacts owned by the Artifact Service, so the feature does not create per-document comparison rows in the application database. The Jobs view reports execution status; the Batches comparison page owns selection and interpretation.
 
 ### Compare coding
 

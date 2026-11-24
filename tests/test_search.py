@@ -4,6 +4,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import Mock
 
 import pytest
@@ -11,6 +12,8 @@ from conftest import create_client_tenant
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import SearchItemSnapshot
@@ -20,6 +23,7 @@ from app.embeddings.parquet import write_chunk_set, write_vector_set
 from app.metadata_hierarchy import hierarchy_entries
 from app.models import (
     Client,
+    DocumentMetadataCurrent,
     Matter,
     MatterDocument,
     MatterDocumentImportJob,
@@ -28,6 +32,7 @@ from app.models import (
     MatterTopicBatch,
     MatterTopicJob,
     MetadataDefinition,
+    MetadataEvent,
     MetadataGroupField,
     ReviewBatch,
     ReviewBatchDocument,
@@ -71,7 +76,9 @@ from app.search.service import (
     DocumentProjectionFailure,
     SearchIndexManager,
     build_document_projection,
+    process_search_operation,
 )
+from app.workflows.search_projection import is_retryable_search_projection_error
 
 
 def test_keyword_search_scope_can_filter_a_later_semantic_query() -> None:
@@ -120,6 +127,17 @@ def test_permanent_opensearch_errors_are_not_retried() -> None:
         )
     )
     assert not is_retryable_opensearch_error(ValueError("bad request"))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OperationalError("select 1", {}, RuntimeError("connection terminated")),
+        SQLAlchemyTimeoutError("connection pool timed out"),
+    ],
+)
+def test_transient_database_errors_are_retryable_search_projection_failures(error: Exception) -> None:
+    assert is_retryable_search_projection_error(error)
 
 
 def definition(
@@ -294,9 +312,7 @@ def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
 
     with pytest.raises(HTTPException, match="Unknown or non-searchable field"):
         compile_search_request(
-            MatterSearchRequest.model_validate(
-                {"filters": [{"field": "unknown", "operator": "EQ", "value": "x"}]}
-            ),
+            MatterSearchRequest.model_validate({"filters": [{"field": "unknown", "operator": "EQ", "value": "x"}]}),
             definitions,
             tenant_id="tenant-1",
             matter_id="matter-1",
@@ -333,9 +349,7 @@ def test_query_compiler_supports_missing_and_value_or_missing_filters() -> None:
         tenant_id="tenant-1",
         matter_id="matter-1",
     )
-    assert {
-        "bool": {"must_not": [{"exists": {"field": "metadata.issue"}}]}
-    } in missing["query"]["bool"]["filter"]
+    assert {"bool": {"must_not": [{"exists": {"field": "metadata.issue"}}]}} in missing["query"]["bool"]["filter"]
 
     negated_values = compile_search_request(
         MatterSearchRequest.model_validate(
@@ -345,13 +359,9 @@ def test_query_compiler_supports_missing_and_value_or_missing_filters() -> None:
         tenant_id="tenant-1",
         matter_id="matter-1",
     )
-    assert {
-        "bool": {
-            "must_not": [
-                {"terms": {"metadata.issue.exact": ["pricing", "conduct"]}}
-            ]
-        }
-    } in negated_values["query"]["bool"]["filter"]
+    assert {"bool": {"must_not": [{"terms": {"metadata.issue.exact": ["pricing", "conduct"]}}]}} in negated_values[
+        "query"
+    ]["bool"]["filter"]
 
     value_or_missing = compile_search_request(
         MatterSearchRequest.model_validate(
@@ -510,9 +520,7 @@ def test_hierarchical_enum_filters_and_facets_use_ancestor_projection() -> None:
         parent="legal",
     )
     child_scope = facet_body["aggs"]["category"]["aggs"]["scope"]
-    assert facet_body["aggs"]["category__missing"] == {
-        "missing": {"field": "metadata.category"}
-    }
+    assert facet_body["aggs"]["category__missing"] == {"missing": {"field": "metadata.category"}}
     assert {"term": {"hierarchy_facets.parent_id": "legal"}} in child_scope["filter"]["bool"]["filter"]
     assert child_scope["aggs"]["values"]["aggs"] == {
         "documents": {"reverse_nested": {}},
@@ -843,20 +851,14 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
     assert hybrid_page_two_body["query"]["hybrid"]["pagination_depth"] == 100
 
     with pytest.raises(ValueError, match="less than or equal to 100"):
-        MatterSearchRequest.model_validate(
-            {"query": "pricing", "search_mode": "HYBRID", "candidate_limit": 101}
-        )
+        MatterSearchRequest.model_validate({"query": "pricing", "search_mode": "HYBRID", "candidate_limit": 101})
 
     with pytest.raises(ValueError, match="SEMANTIC search requires a query"):
         MatterSearchRequest.model_validate({"search_mode": "SEMANTIC"})
     with pytest.raises(ValueError, match="supported only for SEMANTIC"):
-        MatterSearchRequest.model_validate(
-            {"query": "pricing", "search_mode": "HYBRID", "minimum_similarity": 0.75}
-        )
+        MatterSearchRequest.model_validate({"query": "pricing", "search_mode": "HYBRID", "minimum_similarity": 0.75})
     with pytest.raises(ValueError, match="less than or equal to 1"):
-        MatterSearchRequest.model_validate(
-            {"query": "pricing", "search_mode": "SEMANTIC", "minimum_similarity": 1.1}
-        )
+        MatterSearchRequest.model_validate({"query": "pricing", "search_mode": "SEMANTIC", "minimum_similarity": 1.1})
 
 
 class FakeSearchClient:
@@ -1031,8 +1033,8 @@ class FakeHierarchyFacetClient:
                             ]
                         }
                     }
-                }
-            }
+                },
+            },
         }
 
 
@@ -1228,7 +1230,11 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     )
     db = Mock()
     db.get.side_effect = lambda model, identifier: (
-        matter if model is Matter and identifier == matter_id else import_job if model is MatterDocumentImportJob else None
+        matter
+        if model is Matter and identifier == matter_id
+        else import_job
+        if model is MatterDocumentImportJob
+        else None
     )
     db.scalars.return_value = []
     monkeypatch.setattr("app.search.service.get_search_item_snapshot", lambda **_: snapshot)
@@ -1336,7 +1342,11 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
     vector_set = write_vector_set([chunk], [[0.5] * 1024], dimensions=1024, metadata={})
     db = Mock()
     db.get.side_effect = lambda model, identifier: (
-        matter if model is Matter and identifier == matter_id else import_job if model is MatterDocumentImportJob else None
+        matter
+        if model is Matter and identifier == matter_id
+        else import_job
+        if model is MatterDocumentImportJob
+        else None
     )
     db.scalars.return_value = []
     monkeypatch.setattr("app.search.service.get_search_item_snapshot", lambda **_: snapshot)
@@ -1567,6 +1577,322 @@ def test_batch_coding_sync_removes_only_the_target_run_projection(
     assert retained is not None and retained.status == "READY"
     assert projected is not None and projected.status == "READY"
     assert projected.search_index_generation_id == generation.id
+
+
+def test_document_upsert_checkpoints_completed_pages_and_resumes(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Document Upsert Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Document Upsert Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Document upsert checkpoint test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(5)
+    ]
+    db.add_all(documents)
+    operation = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={"document_ids": [str(document.id) for document in documents]},
+        status="RUNNING",
+        workflow_id=f"document-upsert:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(operation)
+    db.commit()
+
+    fake = Mock()
+    fake.count.return_value = 5
+    generation = SimpleNamespace(index_name="matter-document-upsert", document_count=0)
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
+    monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
+    bulk_upsert = Mock(
+        side_effect=[
+            BulkProjectionResult(indexed_count=2),
+            RuntimeError("transient database failure"),
+        ]
+    )
+    monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
+
+    with pytest.raises(RuntimeError, match="transient database failure"):
+        manager.upsert_documents(matter.id, [document.id for document in documents], operation=operation)
+
+    assert operation.payload["next_document_offset"] == 2
+    assert operation.payload["progress"]["processed_documents"] == 2
+    assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 2]
+    fake.refresh.assert_not_called()
+
+    bulk_upsert.reset_mock(side_effect=True)
+    bulk_upsert.return_value = BulkProjectionResult(indexed_count=2)
+    indexed_count = manager.upsert_documents(
+        matter.id,
+        [document.id for document in documents],
+        operation=operation,
+    )
+
+    assert indexed_count == 5
+    assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 1]
+    projected_ids = [document.id for call in bulk_upsert.call_args_list for document in call.args[1]]
+    assert projected_ids == [document.id for document in documents[2:]]
+    assert operation.payload["next_document_offset"] == 5
+    assert operation.payload["retry_document_ids"] == []
+    fake.refresh.assert_called_once_with("matter-document-upsert")
+    assert generation.document_count == 5
+
+
+def test_metadata_field_upsert_sends_only_requested_fields(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Field Projection Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Field Projection Matter")
+    db.add(matter)
+    db.flush()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=uuid.uuid4(),
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Field projection test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    document = MatterDocument(
+        matter_id=matter.id,
+        source_collection_id=import_job.source_collection_id,
+        collection_item_id=uuid.uuid4(),
+        added_by_import_job_id=import_job.id,
+    )
+    requested_definition = MetadataDefinition(
+        matter_id=matter.id,
+        key="trec_priv_coding",
+        display_name="TREC Priv Coding",
+        type="BOOLEAN",
+        cardinality="SINGLE",
+        value_source="IMPORTED",
+        searchable=True,
+    )
+    unrelated_definition = MetadataDefinition(
+        matter_id=matter.id,
+        key="notes",
+        display_name="Notes",
+        type="TEXT",
+        cardinality="SINGLE",
+        value_source="ASSERTED",
+        searchable=True,
+    )
+    db.add_all([document, requested_definition, unrelated_definition])
+    db.flush()
+    event = MetadataEvent(
+        matter_id=matter.id,
+        matter_document_id=document.id,
+        metadata_definition_id=requested_definition.id,
+        operation="SET",
+        value_boolean=True,
+        source_type="IMPORT",
+        source_id=f"trec:{document.id}",
+    )
+    db.add(event)
+    db.flush()
+    db.add(
+        DocumentMetadataCurrent(
+            matter_document_id=document.id,
+            metadata_definition_id=requested_definition.id,
+            value_ordinal=0,
+            matter_id=matter.id,
+            resolution_state="VALUE",
+            value_boolean=True,
+            source_event_id=event.id,
+            supporting_event_ids=[str(event.id)],
+            pending_event_ids=[],
+            conflicting_event_ids=[],
+        )
+    )
+    operation = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={
+            "document_ids": [str(document.id)],
+            "metadata_definition_ids": [str(requested_definition.id)],
+            "projection_scope": "MATTER_CODING_FIELDS",
+        },
+        status="RUNNING",
+        workflow_id=f"field-projection:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(operation)
+    db.commit()
+
+    fake = Mock()
+    captured: list[tuple[str, str, dict[str, object] | None]] = []
+    fake.bulk.side_effect = lambda _index, actions: captured.extend(list(actions))
+    generation = SimpleNamespace(index_name="matter-field-projection")
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=100))
+    monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
+
+    assert manager.upsert_metadata_fields(
+        matter.id,
+        [document.id],
+        [requested_definition.id],
+        operation=operation,
+    ) == 1
+
+    assert captured == [
+        (
+            "update",
+            str(document.id),
+            {
+                "doc": {
+                    "metadata": {"trec_priv_coding": True},
+                    "coded_by": [],
+                }
+            },
+        )
+    ]
+    assert "notes" not in captured[0][2]["doc"]["metadata"]
+    assert operation.payload["next_document_offset"] == 1
+    assert operation.payload["progress"]["phase"] == "PROJECTING_MATTER_CODING"
+    fake.refresh.assert_called_once_with("matter-field-projection")
+
+
+def test_bulk_upsert_releases_coordinator_transaction_before_projection(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Transaction Boundary Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Transaction Boundary Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Transaction boundary test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    document = MatterDocument(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        collection_item_id=uuid.uuid4(),
+        added_by_import_job_id=import_job.id,
+    )
+    db.add(document)
+    db.commit()
+
+    monkeypatch.setattr("app.search.service.build_document_projection", lambda *_args, **_kwargs: {"ok": True})
+    fake = Mock()
+
+    def assert_transaction_released(_index_name: str, _operations: object) -> None:
+        assert not db.in_transaction()
+
+    fake.bulk.side_effect = assert_transaction_released
+    manager = SearchIndexManager(
+        db,
+        fake,
+        Settings(search_bulk_batch_size=500, search_projection_document_concurrency=1),
+    )
+
+    result = manager._bulk_upsert("matter-transaction-boundary", [document], [])
+
+    assert result.indexed_count == 1
+    fake.bulk.assert_called_once()
+
+
+def test_search_operation_rolls_back_before_recording_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    operation = SimpleNamespace(
+        id=uuid.uuid4(),
+        matter_id=uuid.uuid4(),
+        kind="DOCUMENT_UPSERT",
+        payload={"document_ids": []},
+        status="QUEUED",
+        started_at=None,
+        completed_at=None,
+        error_message=None,
+        attempt_count=0,
+    )
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.invalid_transaction = False
+            self.rollback_count = 0
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, _model: object, _identifier: uuid.UUID) -> object:
+            return operation
+
+        def commit(self) -> None:
+            if self.invalid_transaction:
+                raise AssertionError("commit attempted before transaction rollback")
+
+        def rollback(self) -> None:
+            self.rollback_count += 1
+            self.invalid_transaction = False
+
+    fake_db = FakeSession()
+
+    class FailingManager:
+        def __init__(self, db: FakeSession, *_args: object) -> None:
+            self.db = db
+
+        def upsert_documents(self, *_args: object, **_kwargs: object) -> None:
+            self.db.invalid_transaction = True
+            raise RuntimeError("projection query failed")
+
+    fake_client = Mock()
+    monkeypatch.setattr("app.search.service.SessionLocal", lambda: fake_db)
+    monkeypatch.setattr("app.search.service.OpenSearchClient", lambda _settings: fake_client)
+    monkeypatch.setattr("app.search.service.SearchIndexManager", FailingManager)
+
+    with pytest.raises(RuntimeError, match="projection query failed"):
+        process_search_operation(operation.id)
+
+    assert fake_db.rollback_count == 1
+    assert operation.status == "FAILED"
+    assert operation.error_message == "projection query failed"
+    fake_client.close.assert_called_once()
 
 
 def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
@@ -2731,11 +3057,7 @@ def test_reindex_confirmation_requeues_the_schema_operation(
         )
     )
     assert email_domain is not None
-    db.execute(
-        delete(MetadataGroupField).where(
-            MetadataGroupField.metadata_definition_id == email_domain.id
-        )
-    )
+    db.execute(delete(MetadataGroupField).where(MetadataGroupField.metadata_definition_id == email_domain.id))
     db.delete(email_domain)
     db.commit()
 
@@ -2781,13 +3103,15 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_([
-                    "email_domain",
-                    "file_date",
-                    "fact_state",
-                    "parent_id",
-                    "child_id",
-                ]),
+                MetadataDefinition.key.in_(
+                    [
+                        "email_domain",
+                        "file_date",
+                        "fact_state",
+                        "parent_id",
+                        "child_id",
+                    ]
+                ),
             )
         )
     )
@@ -2818,13 +3142,15 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_([
-                    "email_domain",
-                    "file_date",
-                    "fact_state",
-                    "parent_id",
-                    "child_id",
-                ]),
+                MetadataDefinition.key.in_(
+                    [
+                        "email_domain",
+                        "file_date",
+                        "fact_state",
+                        "parent_id",
+                        "child_id",
+                    ]
+                ),
             )
         )
     )
@@ -2927,7 +3253,20 @@ def test_failed_document_upserts_can_be_requeued_in_bulk(
         attempt_count=5,
         error_message="rebuild failed",
     )
-    db.add_all([failed, unrelated])
+    canceled = SearchProjectionOperation(
+        matter_id=matter_id,
+        kind="DOCUMENT_UPSERT",
+        payload={
+            "document_ids": [str(uuid.uuid4())],
+            "operator_canceled": True,
+        },
+        status="FAILED",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+        created_by_user_id=None,
+        attempt_count=1,
+        error_message="Canceled by operator",
+    )
+    db.add_all([failed, unrelated, canceled])
     db.commit()
     failed_id = failed.id
     original_workflow_id = failed.workflow_id
@@ -2952,6 +3291,7 @@ def test_failed_document_upserts_can_be_requeued_in_bulk(
     assert retried.payload["retry_history"][-1]["workflow_id"] == original_workflow_id
     assert retried.payload["retry_history"][-1]["attempt_count"] == 5
     assert db.get(SearchProjectionOperation, unrelated.id).status == "FAILED"
+    assert db.get(SearchProjectionOperation, canceled.id).status == "FAILED"
 
     repeated = client.post(
         f"/v1/matters/{matter_id}/search-operations/retry-failed",
@@ -3016,6 +3356,16 @@ def test_durable_workflow_errors_can_be_requeued_when_operation_is_stranded_runn
         },
     )
 
+    listed = client.get(
+        f"/v1/matters/{matter_id}/search-operations?limit=100",
+        headers=headers,
+    )
+    assert listed.status_code == 200, listed.text
+    listed_by_id = {item["id"]: item for item in listed.json()}
+    assert listed_by_id[str(errored_id)]["status"] == "FAILED"
+    assert "can be retried" in listed_by_id[str(errored_id)]["error_message"]
+    assert listed_by_id[str(active_id)]["status"] == "RUNNING"
+
     summary = client.get(
         f"/v1/matters/{matter_id}/search-operations/retryable",
         headers=headers,
@@ -3027,14 +3377,11 @@ def test_durable_workflow_errors_can_be_requeued_when_operation_is_stranded_runn
     }
 
     response = client.post(
-        f"/v1/matters/{matter_id}/search-operations/retry-failed",
+        f"/v1/matters/{matter_id}/search-operations/{errored_id}/retry",
         headers=headers,
     )
     assert response.status_code == 202, response.text
-    assert response.json() == {
-        "requeued_operation_count": 1,
-        "requeued_document_count": 3,
-    }
+    assert response.json()["status"] == "QUEUED"
     db.expire_all()
     retried = db.get(SearchProjectionOperation, errored_id)
     assert retried is not None

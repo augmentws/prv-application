@@ -53,6 +53,8 @@ from artifact_service.schemas import (
     CollectionItemGroupingSnapshot,
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemIdentity,
+    CollectionItemIdentityMetadata,
+    CollectionItemIdentityMetadataRequest,
     CollectionItemIdentityPage,
     CollectionItemRead,
     CollectionItemRelationshipReconcileRequest,
@@ -85,6 +87,7 @@ from artifact_service.schemas import (
     EmailMetadataInput,
     EmailRecipientInput,
     FacetValue,
+    IdentityParticipantMetadata,
     ProcessingStatus,
     RecordType,
     SourceContainerUploadResponse,
@@ -162,9 +165,7 @@ def _next_date_bucket(value: datetime, interval: DateHistogramInterval) -> datet
 MAX_DATE_HISTOGRAM_BUCKETS = 2_000
 
 
-def _fill_date_buckets(
-    rows: list[tuple[datetime, int]], interval: DateHistogramInterval
-) -> list[DateHistogramBucket]:
+def _fill_date_buckets(rows: list[tuple[datetime, int]], interval: DateHistogramInterval) -> list[DateHistogramBucket]:
     counts = {_date_bucket_start(start, interval): count for start, count in rows}
     if not counts:
         return []
@@ -177,6 +178,7 @@ def _fill_date_buckets(
     if current <= last:
         return [DateHistogramBucket(start=start, count=count) for start, count in sorted(counts.items())]
     return buckets
+
 
 PrincipalDependency = Callable[..., ArtifactPrincipal]
 
@@ -230,13 +232,7 @@ def _get_collection(
 def _facet_values(rows, *, extension: bool = False) -> list[FacetValue]:
     values = [
         FacetValue(
-            value=(
-                "__none__"
-                if raw_value is None
-                else str(raw_value).lstrip(".")
-                if extension
-                else str(raw_value)
-            ),
+            value=("__none__" if raw_value is None else str(raw_value).lstrip(".") if extension else str(raw_value)),
             count=count,
         )
         for raw_value, count in rows
@@ -244,9 +240,7 @@ def _facet_values(rows, *, extension: bool = False) -> list[FacetValue]:
     return sorted(values, key=lambda value: (-value.count, value.value))
 
 
-def _artifact_scope(
-    db: Session, artifact: Artifact
-) -> tuple[str, uuid.UUID | None, uuid.UUID | None]:
+def _artifact_scope(db: Session, artifact: Artifact) -> tuple[str, uuid.UUID | None, uuid.UUID | None]:
     collection_link = db.get(CollectionArtifact, artifact.id)
     if collection_link is not None:
         return collection_link.artifact_role, collection_link.collection_id, None
@@ -309,9 +303,7 @@ def _workflow_artifact_lineage_read(
 ) -> WorkflowArtifactLineageRead:
     return WorkflowArtifactLineageRead(
         workflow_artifact_id=lineage.workflow_artifact_id,
-        source_kind=(
-            "WORKFLOW_ARTIFACT" if lineage.source_workflow_artifact_id is not None else "ARTIFACT"
-        ),
+        source_kind=("WORKFLOW_ARTIFACT" if lineage.source_workflow_artifact_id is not None else "ARTIFACT"),
         source_artifact_id=lineage.source_workflow_artifact_id or lineage.source_artifact_id,
         relationship=lineage.relationship,
         created_at=lineage.created_at,
@@ -582,6 +574,7 @@ def build_router(
         blob = db.get(ContentBlob, artifact.content_blob_id)
         if blob is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Artifact content is unavailable")
+        db.commit()
         try:
             content = storage.open(blob.bucket_name, blob.storage_key)
         except FileNotFoundError as exc:
@@ -758,7 +751,9 @@ def build_router(
         )
         by_id = {item.id: item for item in items}
         if len(by_id) != len(set(payload.item_ids)):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more collection items were not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="One or more collection items were not found"
+            )
         results: list[CollectionTextProcessingTestItem] = []
         for item_id in payload.item_ids:
             item = by_id[item_id]
@@ -825,7 +820,11 @@ def build_router(
         parsed_rules = [TextProcessingRule.model_validate(value) for value in rules]
         selectable_custom_rules = [rule for rule in parsed_rules if rule.enabled]
         selectable_rule_ids = {rule["id"] for rule in DEFAULT_RULES} | {rule.id for rule in selectable_custom_rules}
-        enabled_rule_ids = selectable_rule_ids if payload is None or payload.enabled_rule_ids is None else set(payload.enabled_rule_ids)
+        enabled_rule_ids = (
+            selectable_rule_ids
+            if payload is None or payload.enabled_rule_ids is None
+            else set(payload.enabled_rule_ids)
+        )
         unknown_rule_ids = enabled_rule_ids - selectable_rule_ids
         if unknown_rule_ids:
             raise HTTPException(
@@ -1359,9 +1358,7 @@ def build_router(
             "processing_statuses": CollectionItem.processing_status,
         }[facet]
         rows = db.execute(
-            select(column, func.count(CollectionItem.id))
-            .where(CollectionItem.id.in_(scope))
-            .group_by(column)
+            select(column, func.count(CollectionItem.id)).where(CollectionItem.id.in_(scope)).group_by(column)
         ).all()
         return _facet_values(rows, extension=facet == "file_extensions")
 
@@ -1385,10 +1382,7 @@ def build_router(
             rows = [
                 (start, int(count))
                 for start, count in db.execute(
-                    select(bucket, func.count(CollectionItem.id))
-                    .where(*dated)
-                    .group_by(bucket)
-                    .order_by(bucket)
+                    select(bucket, func.count(CollectionItem.id)).where(*dated).group_by(bucket).order_by(bucket)
                 ).all()
             ]
         else:
@@ -1397,12 +1391,15 @@ def build_router(
                 start = _date_bucket_start(value, interval)
                 counts[start] = counts.get(start, 0) + 1
             rows = sorted(counts.items())
-        missing_count = db.scalar(
-            select(func.count(CollectionItem.id)).where(
-                CollectionItem.collection_id == collection.id,
-                CollectionItem.file_date.is_(None),
+        missing_count = (
+            db.scalar(
+                select(func.count(CollectionItem.id)).where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.file_date.is_(None),
+                )
             )
-        ) or 0
+            or 0
+        )
         return CollectionDateHistogramResponse(
             interval=interval,
             buckets=_fill_date_buckets(rows, interval),
@@ -1455,7 +1452,9 @@ def build_router(
                 query = query.where(Artifact.byte_length >= min_size)
             if max_size is not None:
                 query = query.where(Artifact.byte_length <= max_size)
-        items = list(db.scalars(query.order_by(CollectionItem.created_at, CollectionItem.id).offset(offset).limit(limit)))
+        items = list(
+            db.scalars(query.order_by(CollectionItem.created_at, CollectionItem.id).offset(offset).limit(limit))
+        )
         return [_item_read(db, item) for item in items]
 
     @router.get(
@@ -1470,7 +1469,7 @@ def build_router(
         db: Session = Depends(get_artifact_db),
     ) -> CollectionItemIdentityPage:
         collection = _get_collection(db, collection_id, principal)
-        query = select(CollectionItem.id, CollectionItem.source_item_id).where(
+        query = select(CollectionItem.id, CollectionItem.source_item_id, CollectionItem.family_id).where(
             CollectionItem.collection_id == collection.id
         )
         if after_source_item_id is not None:
@@ -1480,8 +1479,8 @@ def build_router(
         page_rows = rows[:limit]
         return CollectionItemIdentityPage(
             items=[
-                CollectionItemIdentity(item_id=item_id, source_item_id=source_item_id)
-                for item_id, source_item_id in page_rows
+                CollectionItemIdentity(item_id=item_id, source_item_id=source_item_id, family_id=family_id)
+                for item_id, source_item_id, family_id in page_rows
             ],
             next_after_source_item_id=(page_rows[-1][1] if has_more and page_rows else None),
         )
@@ -1516,9 +1515,7 @@ def build_router(
                 if source_item_id in resolved
             ],
             missing_source_item_ids=[
-                source_item_id
-                for source_item_id in payload.source_item_ids
-                if source_item_id not in resolved
+                source_item_id for source_item_id in payload.source_item_ids if source_item_id not in resolved
             ],
         )
 
@@ -1583,6 +1580,66 @@ def build_router(
         return [by_id[item_id] for item_id in payload.item_ids if item_id in by_id]
 
     @router.post(
+        "/collection-items/identity-metadata",
+        response_model=list[CollectionItemIdentityMetadata],
+    )
+    def get_collection_item_identity_metadata(
+        payload: CollectionItemIdentityMetadataRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[CollectionItemIdentityMetadata]:
+        """Batch-read structured participants without returning subject or content."""
+
+        require_client(principal, payload.tenant_id, payload.client_id)
+        item_ids = set(
+            db.scalars(
+                select(CollectionItem.id).where(
+                    CollectionItem.tenant_id == payload.tenant_id,
+                    CollectionItem.client_id == payload.client_id,
+                    CollectionItem.id.in_(payload.item_ids),
+                )
+            )
+        )
+        senders = {
+            item_id: sender
+            for item_id, sender in db.execute(
+                select(CollectionItemEmail.collection_item_id, CollectionItemEmail.sender).where(
+                    CollectionItemEmail.collection_item_id.in_(item_ids)
+                )
+            )
+        }
+        by_id = {
+            item_id: CollectionItemIdentityMetadata(
+                item_id=item_id,
+                sender=(
+                    IdentityParticipantMetadata(email_address=senders[item_id], display_name=None)
+                    if senders.get(item_id)
+                    else None
+                ),
+                recipients={"TO": [], "CC": [], "BCC": []},
+            )
+            for item_id in item_ids
+        }
+        for item_id, recipient_type, email_address, display_name in db.execute(
+            select(
+                CollectionItemEmailRecipient.collection_item_id,
+                CollectionItemEmailRecipient.recipient_type,
+                CollectionItemEmailRecipient.email_address,
+                CollectionItemEmailRecipient.display_name,
+            )
+            .where(CollectionItemEmailRecipient.collection_item_id.in_(item_ids))
+            .order_by(
+                CollectionItemEmailRecipient.collection_item_id,
+                CollectionItemEmailRecipient.recipient_type,
+                CollectionItemEmailRecipient.ordinal,
+            )
+        ):
+            by_id[item_id].recipients[recipient_type].append(
+                IdentityParticipantMetadata(email_address=email_address, display_name=display_name)
+            )
+        return [by_id[item_id] for item_id in payload.item_ids if item_id in by_id]
+
+    @router.post(
         "/collection-items/relationship-snapshots",
         response_model=list[CollectionItemRelationshipSnapshot],
     )
@@ -1642,9 +1699,7 @@ def build_router(
         children = [by_source_id[relationship.child_source_item_id] for relationship in payload.relationships]
         target_parents = [by_source_id[relationship.parent_source_item_id] for relationship in payload.relationships]
         current_parent_ids = {
-            child.parent_collection_item_id
-            for child in children
-            if child.parent_collection_item_id is not None
+            child.parent_collection_item_id for child in children if child.parent_collection_item_id is not None
         }
 
         # Load current ancestry in bounded waves so cycle validation does not
@@ -1670,9 +1725,7 @@ def build_router(
             frontier = next_frontier
 
         proposed_parent = {
-            by_source_id[relationship.child_source_item_id].id: by_source_id[
-                relationship.parent_source_item_id
-            ].id
+            by_source_id[relationship.child_source_item_id].id: by_source_id[relationship.parent_source_item_id].id
             for relationship in payload.relationships
         }
         for child_id, parent_id in proposed_parent.items():
@@ -1900,6 +1953,7 @@ def build_router(
         blob = db.get(ContentBlob, artifact.content_blob_id)
         if blob is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Artifact content is unavailable")
+        db.commit()
         try:
             content = storage.open(blob.bucket_name, blob.storage_key)
         except FileNotFoundError as exc:

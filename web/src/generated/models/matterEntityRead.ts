@@ -5,7 +5,9 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterEntityDomainRead } from './matterEntityDomainRead';
 import type { MatterEntityReadEntityType } from './matterEntityReadEntityType';
+import type { MatterEntityReadOrganizationCategory } from './matterEntityReadOrganizationCategory';
 import type { MatterEntityReadStatus } from './matterEntityReadStatus';
 import type { MatterEntityVariantRead } from './matterEntityVariantRead';
 
@@ -13,6 +15,7 @@ export interface MatterEntityRead {
   id: string;
   matter_id: string;
   entity_type: MatterEntityReadEntityType;
+  organization_category: MatterEntityReadOrganizationCategory;
   display_name: string | null;
   email: string | null;
   title: string | null;
@@ -26,5 +29,6 @@ export interface MatterEntityRead {
   created_at: string;
   updated_at: string;
   variants?: MatterEntityVariantRead[];
+  domains?: MatterEntityDomainRead[];
   fact_count?: number;
 }

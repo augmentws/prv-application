@@ -208,6 +208,40 @@ def test_review_batch_delete_archives_without_removing_history(
         assert audit.details["soft_delete"] is True
 
 
+def test_explicit_document_batch_can_be_created_through_api(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
+    document_ids = add_documents(matter_id, root_admin.id, count=3)
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Frozen backtest cohort",
+            "selection_type": "EXPLICIT_DOCUMENTS",
+            "document_ids": [document_ids[2], document_ids[0]],
+        },
+    )
+
+    assert created.status_code == 202, created.text
+    payload = created.json()
+    assert payload["status"] == "READY"
+    assert payload["document_count"] == 2
+    assert payload["selection_definition"]["document_ids"] == [document_ids[2], document_ids[0]]
+    with TestingSessionLocal() as db:
+        actual_ids = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == uuid.UUID(payload["id"]))
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        )
+    assert [str(value) for value in actual_ids] == [document_ids[2], document_ids[0]]
+
+
 def test_review_batch_list_supports_explicit_document_batches(
     client: TestClient,
     root_token: str,
@@ -1116,6 +1150,12 @@ def test_batch_selection_validation(client: TestClient, root_token: str, root_ad
         json={"name": "Missing saved search", "selection_type": "RANDOM_SAVED_SEARCH", "sample_size": 10},
     )
     assert missing_saved_search.status_code == 422
+    missing_all_saved_search = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={"name": "Missing all-match saved search", "selection_type": "SAVED_SEARCH"},
+    )
+    assert missing_all_saved_search.status_code == 422
     missing_sample_size = client.post(
         f"/v1/matters/{matter_id}/review-batches",
         headers=auth(root_token),
@@ -1126,6 +1166,18 @@ def test_batch_selection_validation(client: TestClient, root_token: str, root_ad
         },
     )
     assert missing_sample_size.status_code == 422
+    missing_composite_preview = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Incomplete composite",
+            "selection_type": "COMPOSITE_SAVED_SEARCH",
+            "fixed_saved_search_id": str(uuid.uuid4()),
+            "sample_saved_search_id": str(uuid.uuid4()),
+            "sample_size": 10,
+        },
+    )
+    assert missing_composite_preview.status_code == 422
 
 
 def test_random_saved_search_batch_snapshots_and_samples_matching_documents(
@@ -1220,6 +1272,209 @@ def test_random_saved_search_batch_snapshots_and_samples_matching_documents(
             )
         ]
     assert actual == expected
+
+    all_created = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "All saved search matches",
+            "selection_type": "SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+        },
+    )
+    assert all_created.status_code == 202, all_created.text
+    all_batch = all_created.json()
+    assert all_batch["status"] == "READY"
+    assert all_batch["document_count"] == len(eligible_ids)
+    assert all_batch["sample_size"] is None
+    assert all_batch["random_seed"] is None
+    assert all_batch["selection_definition"]["saved_search_id"] == saved.json()["id"]
+    with TestingSessionLocal() as db:
+        all_actual = [
+            str(document_id)
+            for document_id in db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == uuid.UUID(all_batch["id"]))
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        ]
+    assert all_actual == eligible_ids
+
+
+def test_composite_saved_search_batch_includes_fixed_matches_and_deterministic_sample(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
+    document_ids = add_documents(matter_id, root_admin.id, count=6)
+    fixed_ids = document_ids[:2]
+    sample_ids = document_ids[1:5]
+    with TestingSessionLocal() as db:
+        generation = SearchIndexGeneration(
+            matter_id=uuid.UUID(matter_id),
+            generation=1,
+            index_name=f"matter-{matter_id}-000001",
+            alias_name=f"matter-{matter_id}",
+            schema_hash="b" * 64,
+            status="ACTIVE",
+            document_count=len(document_ids),
+            schema_snapshot={},
+            activated_at=datetime.now(timezone.utc),
+        )
+        db.add(generation)
+        db.commit()
+        generation_id = str(generation.id)
+
+    class FakeOpenSearchClient:
+        call_count = 0
+
+        def __init__(self, _settings):
+            pass
+
+        def search(self, index_name, body):
+            assert index_name == f"matter-{matter_id}-000001"
+            ids = fixed_ids if self.__class__.call_count % 2 == 0 else sample_ids
+            self.__class__.call_count += 1
+            return {
+                "hits": {
+                    "hits": [
+                        {"_source": {"document_id": document_id}, "sort": [document_id]}
+                        for document_id in ids
+                    ]
+                }
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.review_batches.OpenSearchClient", FakeOpenSearchClient)
+    fixed_saved = client.post(
+        f"/v1/matters/{matter_id}/saved-searches",
+        headers=auth(root_token),
+        json={
+            "name": "Known privilege",
+            "visibility": "PRIVATE",
+            "search": {"query": "privileged", "search_mode": "KEYWORD"},
+        },
+    ).json()
+    sample_saved = client.post(
+        f"/v1/matters/{matter_id}/saved-searches",
+        headers=auth(root_token),
+        json={
+            "name": "Uncoded population",
+            "visibility": "PRIVATE",
+            "search": {"query": "uncoded", "search_mode": "KEYWORD"},
+        },
+    ).json()
+
+    preview = client.post(
+        f"/v1/matters/{matter_id}/review-batches/composite-preview",
+        headers=auth(root_token),
+        json={
+            "fixed_saved_search_id": fixed_saved["id"],
+            "sample_saved_search_id": sample_saved["id"],
+            "sample_size": 2,
+            "random_seed": "composite-seed",
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    preview_data = preview.json()
+    assert preview_data == {
+        "fixed_match_count": 2,
+        "sample_match_count": 4,
+        "overlap_count": 1,
+        "eligible_sample_count": 3,
+        "requested_sample_count": 2,
+        "selected_sample_count": 2,
+        "family_added_count": 0,
+        "final_document_count": 4,
+        "random_seed": "composite-seed",
+        "search_index_generation_id": generation_id,
+        "preview_hash": preview_data["preview_hash"],
+        "warnings": [],
+    }
+
+    limited_preview = client.post(
+        f"/v1/matters/{matter_id}/review-batches/composite-preview",
+        headers=auth(root_token),
+        json={
+            "fixed_saved_search_id": fixed_saved["id"],
+            "sample_saved_search_id": sample_saved["id"],
+            "sample_size": 10,
+            "random_seed": "limited-seed",
+        },
+    )
+    assert limited_preview.status_code == 200, limited_preview.text
+    assert limited_preview.json()["selected_sample_count"] == 3
+    assert limited_preview.json()["final_document_count"] == 5
+    assert limited_preview.json()["warnings"] == [
+        "Only 3 non-overlapping random candidates were available; 10 were requested."
+    ]
+
+    stale = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Stale composite",
+            "selection_type": "COMPOSITE_SAVED_SEARCH",
+            "fixed_saved_search_id": fixed_saved["id"],
+            "sample_saved_search_id": sample_saved["id"],
+            "sample_size": 2,
+            "random_seed": preview_data["random_seed"],
+            "expected_search_index_generation_id": generation_id,
+            "preview_hash": "0" * 64,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Privilege plus control sample",
+            "selection_type": "COMPOSITE_SAVED_SEARCH",
+            "fixed_saved_search_id": fixed_saved["id"],
+            "sample_saved_search_id": sample_saved["id"],
+            "sample_size": 2,
+            "random_seed": preview_data["random_seed"],
+            "expected_search_index_generation_id": generation_id,
+            "preview_hash": preview_data["preview_hash"],
+        },
+    )
+    assert created.status_code == 202, created.text
+    batch = created.json()
+    assert batch["status"] == "READY"
+    assert batch["document_count"] == 4
+    assert batch["selection_type"] == "COMPOSITE_SAVED_SEARCH"
+    assert batch["selection_definition"]["fixed_saved_search_name"] == "Known privilege"
+    assert batch["selection_definition"]["sample_saved_search_name"] == "Uncoded population"
+    assert batch["selection_definition"]["composite_population"] == {
+        "fixed_match_count": 2,
+        "sample_match_count": 4,
+        "overlap_count": 1,
+        "eligible_sample_count": 3,
+        "requested_sample_count": 2,
+        "selected_sample_count": 2,
+        "family_added_count": 0,
+        "final_document_count": 4,
+        "warnings": [],
+    }
+
+    expected_sample = sorted(
+        document_ids[2:5],
+        key=lambda document_id: hashlib.sha256(f"composite-seed:{document_id}".encode()).digest(),
+    )[:2]
+    with TestingSessionLocal() as db:
+        actual = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == uuid.UUID(batch["id"]))
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        )
+    assert [str(value) for value in actual] == [*fixed_ids, *expected_sample]
 
 
 def test_workflow_review_run_has_workflow_owner(

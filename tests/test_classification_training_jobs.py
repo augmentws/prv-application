@@ -2,7 +2,7 @@ import uuid
 
 from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InternalError, OperationalError
 from test_classification_models import (
     auth,
     binary_configuration,
@@ -11,6 +11,7 @@ from test_classification_models import (
     create_model,
 )
 
+from app.classification_datasets import ClassificationDatasetConflictError
 from app.classification_features import ClassificationFeatureSplitError
 from app.classification_training_jobs import training_job_failure_details
 from app.models import MatterEmbeddingJob
@@ -67,6 +68,34 @@ def test_training_job_failure_details_marks_database_operational_errors_retriabl
     assert code == "e3q8"
     assert retriable is True
     assert "shared memory exhausted" in summary
+
+
+def test_training_job_failure_details_marks_disconnected_internal_errors_retriable() -> None:
+    failure = InternalError(
+        "UPDATE classification_dataset_snapshot SET status = 'FAILED'",
+        {},
+        RuntimeError("terminating connection due to idle-in-transaction timeout"),
+        connection_invalidated=True,
+    )
+
+    code, retriable, summary = training_job_failure_details(failure)
+
+    assert code == "2j85"
+    assert retriable is True
+    assert "idle-in-transaction timeout" in summary
+
+
+def test_training_job_failure_details_marks_dataset_validation_non_retriable() -> None:
+    failure = ClassificationDatasetConflictError(
+        "Dataset snapshot is blocked: NO_LABELED_DOCUMENTS",
+        code="NO_LABELED_DOCUMENTS",
+    )
+
+    assert training_job_failure_details(failure) == (
+        "NO_LABELED_DOCUMENTS",
+        False,
+        "Dataset snapshot is blocked: NO_LABELED_DOCUMENTS",
+    )
 
 
 def test_training_job_is_created_before_dataset_preparation(

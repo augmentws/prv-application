@@ -195,6 +195,7 @@ def process_batch(
         imported_event_count = 0
         warning_messages: list[str] = []
         metadata_changed_document_ids: set[uuid.UUID] = set()
+        metadata_changed_definition_ids: set[uuid.UUID] = set()
         for item in items:
             document = documents[item.item_id]
             for source_key, raw_value in item.unmapped_metadata.items():
@@ -217,6 +218,8 @@ def process_batch(
                 imported_document_ids.add(document.id)
                 imported_event_count += len(application.events)
                 metadata_changed_document_ids.add(document.id)
+                if definition.searchable:
+                    metadata_changed_definition_ids.add(definition.id)
                 for event in application.events:
                     record_audit(
                         db,
@@ -242,15 +245,34 @@ def process_batch(
         batch.imported_label_event_count = imported_event_count
         batch.imported_label_warning_count = len(warning_messages)
         batch.error_message = "\n".join(warning_messages[:20]) or None
-        search_document_ids = {
-            documents[item_id].id for item_id in new_ids
-        } | metadata_changed_document_ids
-        if search_document_ids:
+        new_document_ids = {documents[item_id].id for item_id in new_ids}
+        if new_document_ids:
             create_search_operation(
                 db,
                 matter_id=job.matter_id,
                 kind="DOCUMENT_UPSERT",
-                payload={"document_ids": sorted(str(document_id) for document_id in search_document_ids)},
+                payload={
+                    "document_ids": sorted(str(document_id) for document_id in new_document_ids),
+                    "projection_scope": "FULL_DOCUMENT",
+                },
+                created_by_user_id=job.created_by_user_id,
+                priority=100,
+            )
+        existing_changed_document_ids = metadata_changed_document_ids - new_document_ids
+        if existing_changed_document_ids and metadata_changed_definition_ids:
+            create_search_operation(
+                db,
+                matter_id=job.matter_id,
+                kind="DOCUMENT_UPSERT",
+                payload={
+                    "document_ids": sorted(
+                        str(document_id) for document_id in existing_changed_document_ids
+                    ),
+                    "metadata_definition_ids": sorted(
+                        str(definition_id) for definition_id in metadata_changed_definition_ids
+                    ),
+                    "projection_scope": "MATTER_CODING_FIELDS",
+                },
                 created_by_user_id=job.created_by_user_id,
                 priority=100,
             )

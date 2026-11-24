@@ -445,14 +445,20 @@ def _search_document_ids(
     matter: Matter,
     settings: Settings,
 ) -> list[uuid.UUID]:
-    generation = db.scalar(
-        select(SearchIndexGeneration).where(
-            SearchIndexGeneration.matter_id == matter.id,
-            SearchIndexGeneration.status == "ACTIVE",
+    generation = (
+        db.get(SearchIndexGeneration, batch.search_index_generation_id)
+        if batch.search_index_generation_id is not None
+        else db.scalar(
+            select(SearchIndexGeneration).where(
+                SearchIndexGeneration.matter_id == matter.id,
+                SearchIndexGeneration.status == "ACTIVE",
+            )
         )
     )
     if generation is None:
         raise ValueError("The matter search index must be ready before creating a search-query batch")
+    if generation.matter_id != matter.id:
+        raise ValueError("The pinned search index generation belongs to another matter")
     batch.search_index_generation_id = generation.id
     batch.selection_definition = {
         **batch.selection_definition,
@@ -464,6 +470,40 @@ def _search_document_ids(
         },
     }
     request = MatterSearchRequest.model_validate(batch.selection_definition["search"])
+    return _search_request_document_ids(db, matter, settings, generation, request)
+
+
+def active_search_index_generation(db: Session, matter_id: uuid.UUID) -> SearchIndexGeneration:
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter_id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise ValueError("The matter search index must be ready before creating a search-query batch")
+    return generation
+
+
+def search_index_generation_snapshot(generation: SearchIndexGeneration) -> dict[str, object]:
+    return {
+        "id": str(generation.id),
+        "generation": generation.generation,
+        "index_name": generation.index_name,
+        "schema_hash": generation.schema_hash,
+        "activated_at": generation.activated_at.isoformat() if generation.activated_at else None,
+    }
+
+
+def _search_request_document_ids(
+    db: Session,
+    matter: Matter,
+    settings: Settings,
+    generation: SearchIndexGeneration,
+    request: MatterSearchRequest,
+    *,
+    client: OpenSearchClient | None = None,
+) -> list[uuid.UUID]:
     definitions = list(db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id)))
     body = compile_search_request(
         request.model_copy(update={"offset": 0, "size": 500, "facets": []}),
@@ -475,11 +515,11 @@ def _search_document_ids(
     body["_source"] = ["document_id"]
     body["sort"] = [{"document_id": "asc"}]
     body.pop("from", None)
-    client = OpenSearchClient(settings)
+    search_client = client or OpenSearchClient(settings)
     document_ids: list[uuid.UUID] = []
     try:
         while True:
-            raw = client.search(generation.index_name, body)
+            raw = search_client.search(generation.index_name, body)
             hits = raw.get("hits", {}).get("hits", [])
             if not hits:
                 break
@@ -490,7 +530,131 @@ def _search_document_ids(
                 break
             body["search_after"] = hits[-1]["sort"]
     finally:
+        if client is None:
+            search_client.close()
+    return list(dict.fromkeys(document_ids))
+
+
+def resolve_composite_saved_search_population(
+    db: Session,
+    *,
+    matter: Matter,
+    settings: Settings,
+    generation: SearchIndexGeneration,
+    fixed_search: MatterSearchRequest,
+    sample_search: MatterSearchRequest,
+    sample_size: int,
+    random_seed: str,
+    actor_user_id: uuid.UUID,
+    include_complete_families: bool,
+) -> tuple[list[uuid.UUID], dict[str, object]]:
+    """Resolve a fixed population plus a deterministic sample from a second population."""
+
+    client = OpenSearchClient(settings)
+    try:
+        fixed_ids = _search_request_document_ids(
+            db,
+            matter,
+            settings,
+            generation,
+            fixed_search,
+            client=client,
+        )
+        sample_ids = _search_request_document_ids(
+            db,
+            matter,
+            settings,
+            generation,
+            sample_search,
+            client=client,
+        )
+    finally:
         client.close()
+
+    fixed_set = set(fixed_ids)
+    overlap_count = sum(document_id in fixed_set for document_id in sample_ids)
+    eligible_sample_ids = [document_id for document_id in sample_ids if document_id not in fixed_set]
+    eligible_sample_ids.sort(key=lambda value: _stable_key(value, random_seed))
+    sampled_ids = eligible_sample_ids[:sample_size]
+    selected_ids = [*fixed_ids, *sampled_ids]
+    warnings: list[str] = []
+    if len(sampled_ids) < sample_size:
+        warnings.append(
+            f"Only {len(sampled_ids):,} non-overlapping random candidates were available; "
+            f"{sample_size:,} were requested."
+        )
+
+    family_added_count = 0
+    if include_complete_families:
+        preview_batch = ReviewBatch(
+            id=uuid.uuid4(),
+            matter_id=matter.id,
+            name="Composite population preview",
+            selection_type="COMPOSITE_SAVED_SEARCH",
+            selection_definition={"family_policy": "EXPAND_COMPLETE_FAMILIES_IN_MATTER"},
+            sample_size=sample_size,
+            random_seed=random_seed,
+            created_by_user_id=actor_user_id,
+        )
+        expanded_ids = _expand_complete_families(
+            db,
+            batch=preview_batch,
+            matter=matter,
+            seed_document_ids=selected_ids,
+        )
+        family_added_count = len(expanded_ids) - len(selected_ids)
+        selected_ids = expanded_ids
+
+    summary: dict[str, object] = {
+        "fixed_match_count": len(fixed_ids),
+        "sample_match_count": len(sample_ids),
+        "overlap_count": overlap_count,
+        "eligible_sample_count": len(eligible_sample_ids),
+        "requested_sample_count": sample_size,
+        "selected_sample_count": len(sampled_ids),
+        "family_added_count": family_added_count,
+        "final_document_count": len(selected_ids),
+        "warnings": warnings,
+    }
+    return selected_ids, summary
+
+
+def _composite_saved_search_document_ids(
+    db: Session,
+    batch: ReviewBatch,
+    matter: Matter,
+    settings: Settings,
+) -> list[uuid.UUID]:
+    if batch.search_index_generation_id is None:
+        raise ValueError("Composite batch is missing its pinned search index generation")
+    generation = db.get(SearchIndexGeneration, batch.search_index_generation_id)
+    if generation is None or generation.matter_id != matter.id:
+        raise ValueError("Composite batch search index generation is unavailable")
+    try:
+        fixed_search = MatterSearchRequest.model_validate(batch.selection_definition["fixed_search"])
+        sample_search = MatterSearchRequest.model_validate(batch.selection_definition["sample_search"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Composite batch search snapshots are invalid") from exc
+    if batch.sample_size is None or not batch.random_seed:
+        raise ValueError("Composite batch sampling configuration is incomplete")
+    document_ids, summary = resolve_composite_saved_search_population(
+        db,
+        matter=matter,
+        settings=settings,
+        generation=generation,
+        fixed_search=fixed_search,
+        sample_search=sample_search,
+        sample_size=batch.sample_size,
+        random_seed=batch.random_seed,
+        actor_user_id=batch.created_by_user_id,
+        include_complete_families=(
+            batch.selection_definition.get("family_policy") == "EXPAND_COMPLETE_FAMILIES_IN_MATTER"
+        ),
+    )
+    batch.selection_definition = {
+        **batch.selection_definition,
+        "composite_population": summary,
+    }
     return document_ids
 
 
@@ -520,13 +684,18 @@ def materialize_review_batch(db: Session, batch_id: uuid.UUID, settings: Setting
     if matter is None:
         raise ValueError("Matter not found")
     try:
-        if batch.selection_type in {"SEARCH_QUERY", "RANDOM_SAVED_SEARCH"}:
+        if batch.selection_type == "COMPOSITE_SAVED_SEARCH":
+            document_ids = _composite_saved_search_document_ids(db, batch, matter, settings)
+        elif batch.selection_type in {"SEARCH_QUERY", "SAVED_SEARCH", "RANDOM_SAVED_SEARCH"}:
             document_ids = _search_document_ids(db, batch, matter, settings)
             if batch.selection_type == "RANDOM_SAVED_SEARCH":
                 document_ids = _sample_document_ids(document_ids, batch)
         else:
             document_ids = _database_document_ids(db, batch)
-        if batch.selection_definition.get("family_policy") == "EXPAND_COMPLETE_FAMILIES_IN_MATTER":
+        if (
+            batch.selection_type != "COMPOSITE_SAVED_SEARCH"
+            and batch.selection_definition.get("family_policy") == "EXPAND_COMPLETE_FAMILIES_IN_MATTER"
+        ):
             document_ids = _expand_complete_families(
                 db,
                 batch=batch,

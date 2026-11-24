@@ -1,11 +1,19 @@
 import uuid
 
 from dbos import DBOS, Queue
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from app.search.client import is_retryable_opensearch_error
 from app.search.service import process_search_operation
 
 SEARCH_QUEUE = Queue("search-projections", global_concurrency=4, priority_enabled=True)
+
+
+def is_retryable_search_projection_error(exc: Exception) -> bool:
+    """Retry transient search transport and database availability failures."""
+
+    return isinstance(exc, (OperationalError, SQLAlchemyTimeoutError)) or is_retryable_opensearch_error(exc)
 
 
 @DBOS.step(
@@ -14,7 +22,7 @@ SEARCH_QUEUE = Queue("search-projections", global_concurrency=4, priority_enable
     interval_seconds=30,
     max_attempts=16,
     backoff_rate=2,
-    should_retry=is_retryable_opensearch_error,
+    should_retry=is_retryable_search_projection_error,
 )
 def apply_search_projection(operation_id: str) -> None:
     process_search_operation(uuid.UUID(operation_id))

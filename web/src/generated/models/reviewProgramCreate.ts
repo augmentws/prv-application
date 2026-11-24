@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { PrivilegeReviewFoundationCreate } from './privilegeReviewFoundationCreate';
 
 export interface ReviewProgramCreate {
   /**
@@ -22,4 +23,5 @@ export interface ReviewProgramCreate {
   description?: string | null;
   owner_user_id?: string | null;
   matter_definition_id?: string | null;
+  privilege_review?: PrivilegeReviewFoundationCreate | null;
 }

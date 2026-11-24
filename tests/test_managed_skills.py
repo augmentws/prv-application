@@ -246,6 +246,7 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
     skills = list(db.scalars(select(SkillDefinition).where(SkillDefinition.scope == "SYSTEM")))
     bindings = list(db.scalars(select(WorkflowSkillBinding).where(WorkflowSkillBinding.scope == "SYSTEM")))
     assert {skill.key for skill in skills} == {
+        "identity_domain_law_firm_review",
         "matter_definition_criterion_adjudication",
         "matter_definition_evidence_extraction",
         "matter_definition_evidence_narrative",
@@ -255,6 +256,7 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
         "matter_definition_guidance_refinement",
     }
     assert {binding.role_key for binding in bindings} == {
+        "domain_reviewer",
         "criterion_adjudication",
         "evidence_extraction",
         "narrative",
@@ -262,6 +264,19 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
         "document_analysis",
         "assessment_synthesis",
         "guidance_refinement",
+    }
+    domain_reviewer = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key.startswith("identity_domain_recommendation_output")
+    )
+    assert domain_reviewer.output_schema_key == "identity_domain_recommendation_output_v3"
+    assert domain_reviewer.input_schema["properties"]["domains"]["maxItems"] == 100
+    assert domain_reviewer.output_schema["properties"]["recommendations"]["maxItems"] == 100
+    assert domain_reviewer.limits == {
+        "max_requests": 2,
+        "max_output_tokens": 24_000,
+        "max_output_retries": 1,
     }
     planner = next(
         version

@@ -184,7 +184,9 @@ def utcnow() -> datetime:
 # Launch, retry, cancel
 
 
-def _published_version(db: Session, task: MatterAnalysisTask) -> tuple[MatterAnalysisTaskVersion, FactDevelopmentSpecification]:
+def _published_version(
+    db: Session, task: MatterAnalysisTask
+) -> tuple[MatterAnalysisTaskVersion, FactDevelopmentSpecification]:
     if task.task_type != "FACT_DEVELOPMENT" or task.status != "ACTIVE":
         raise FactDevelopmentRunError("An active fact-development Analysis Task is required")
     if task.published_version is None:
@@ -601,7 +603,9 @@ def retry_fact_development_run(db: Session, run: MatterAnalysisTaskRun, *, actor
     A canceled run is final: cancellation publishes CANCELED outcomes for every unfinished chunk.
     """
 
-    current = current_job_execution(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id, for_update=True)
+    current = current_job_execution(
+        db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id, for_update=True
+    )
     if current is None or current.status != "FAILED":
         raise JobExecutionConflict("Only failed fact-development runs can be retried")
     if not current.failure_retriable:
@@ -1167,7 +1171,9 @@ def _resolve_population(
             client_id=matter.client_id,
         )
     except (httpx.HTTPError, PermissionError, ValueError) as exc:
-        raise FactDevelopmentRunError(f"Document inputs are unavailable: {exc}", code="INPUT_RESOLUTION_FAILED") from exc
+        raise FactDevelopmentRunError(
+            f"Document inputs are unavailable: {exc}", code="INPUT_RESOLUTION_FAILED"
+        ) from exc
     custodians: dict[uuid.UUID, list[str]] = {}
     for document_id, custodian_id in db.execute(
         select(MatterDocumentCustodian.matter_document_id, MatterDocumentCustodian.custodian_id)
@@ -1441,7 +1447,9 @@ def _run_context(
         consolidation_step=consolidation_step,
         consolidation_skill_version=consolidation_version,
         consolidation_model=(
-            consolidation_model if consolidation_model is not None else run.configuration_snapshot["consolidation_model"]
+            consolidation_model
+            if consolidation_model is not None
+            else run.configuration_snapshot["consolidation_model"]
         ),
     )
 
@@ -1543,7 +1551,12 @@ def _specification_context(specification: FactDevelopmentSpecification) -> dict[
         "date_rules": specification.date_rules,
         "owner_rules": specification.owner_rules,
         "issues": [
-            {"key": issue.key, "name": issue.name, "description": issue.description, "fact_guidance": issue.fact_guidance}
+            {
+                "key": issue.key,
+                "name": issue.name,
+                "description": issue.description,
+                "fact_guidance": issue.fact_guidance,
+            }
             for issue in specification.issues
         ],
     }
@@ -1718,6 +1731,7 @@ def prepare_document(
         )
     source = inputs["text_source"]
     max_characters = int(context.configuration["max_document_characters"])
+    db.commit()
     try:
         raw_text = read_text_source(
             TextSourceReference(
@@ -1825,7 +1839,9 @@ def _process_document(
     document_id = row["matter_document_id"]
     if batched is not None and batched.has(document_id):
         recalled, recall_unavailable = batched.recalled(document_id)
-        prepared = prepare_document(db, context, chunk, row, counts, recalled=recalled, recall_unavailable=recall_unavailable)
+        prepared = prepare_document(
+            db, context, chunk, row, counts, recalled=recalled, recall_unavailable=recall_unavailable
+        )
         if isinstance(prepared, JobItemOutcome):
             batched.abandon(db, document_id, f"The batch result was not applied: {prepared.reason_code}")
             return prepared
@@ -1987,7 +2003,9 @@ def process_fact_development_chunk(
             if canceled or _cancel_requested(db, run.id):
                 canceled = True
                 if batched is not None and batched.has(row["matter_document_id"]):
-                    batched.abandon(db, row["matter_document_id"], "The run was canceled before the batch result was applied")
+                    batched.abandon(
+                        db, row["matter_document_id"], "The run was canceled before the batch result was applied"
+                    )
                 outcomes.append(
                     _outcome(
                         row["matter_document_id"],
@@ -2020,7 +2038,9 @@ def process_fact_development_chunk(
 
 def _canceled_outcomes(rows: list[dict[str, Any]]) -> list[JobItemOutcome]:
     return [
-        _outcome(row["matter_document_id"], "CANCELED", "fact.run_canceled", "The run was canceled before this document")
+        _outcome(
+            row["matter_document_id"], "CANCELED", "fact.run_canceled", "The run was canceled before this document"
+        )
         for row in rows
     ]
 
@@ -2053,9 +2073,12 @@ def _report(db: Session, run: MatterAnalysisTaskRun, context_execution_ids: list
         "status_counts": dict(manifest.status_counts),
         "reason_counts": dict(manifest.reason_counts),
         "counts": {key: counts.get(key, 0) for key in COUNT_KEYS},
-        "facts_by_issue": [{"issue_key": key, "fact_count": int(value)} for key, value in sorted(facts_by_issue.items())],
+        "facts_by_issue": [
+            {"issue_key": key, "fact_count": int(value)} for key, value in sorted(facts_by_issue.items())
+        ],
         "qc": {
-            "documents_without_facts": int(manifest.status_counts.get("SUCCEEDED", 0)) - counts.get("documents_with_facts", 0),
+            "documents_without_facts": int(manifest.status_counts.get("SUCCEEDED", 0))
+            - counts.get("documents_with_facts", 0),
             "invalid_operations": counts.get("invalid_operations", 0),
             "entities_awaiting_confirmation": pending_entities,
             "recall_unavailable": counts.get("recall_unavailable", 0),

@@ -65,8 +65,8 @@ TERMINAL_PROVIDER_STATES = {
     "JOB_STATE_EXPIRED",
 }
 SUCCESS_PROVIDER_STATES = {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"}
-# Gemini inline batches are limited to 20 MB. Leave ample room for the
-# instructions, JSON schema, and request envelope added during submission.
+# Keep provider batches below the strictest configured payload limit, leaving
+# room for instructions, JSON schema, and the submission request envelope.
 PROVIDER_BATCH_MAX_ESTIMATED_BYTES = 12_000_000
 PROVIDER_BATCH_REQUEST_OVERHEAD_BYTES = 50_000
 PROVIDER_BATCH_FINALIZATION_CHECKPOINT_SIZE = 10
@@ -198,8 +198,7 @@ def plan_provider_batches(
     current_bytes = 0
     for document_id, estimated_bytes in eligible:
         if current_group and (
-            len(current_group) >= batch_size
-            or current_bytes + estimated_bytes > PROVIDER_BATCH_MAX_ESTIMATED_BYTES
+            len(current_group) >= batch_size or current_bytes + estimated_bytes > PROVIDER_BATCH_MAX_ESTIMATED_BYTES
         ):
             grouped.append(current_group)
             current_group = []
@@ -296,6 +295,7 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
         run_document = db.get(ReviewBatchRunDocument, (batch.review_batch_run_id, document_id))
         if document is None or run_document is None:
             raise ValueError("Assessment provider batch references a missing document")
+        db.commit()
         source = get_preferred_text_source(
             collection_item_id=document.collection_item_id,
             actor_user_id=assessment.initiated_by_user_id,
@@ -315,6 +315,7 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
             scope_type="MATTER_DOCUMENT",
             scope_id=document.id,
             request_input={"stable_context": request.stable_context, "dynamic_input": request.dynamic_input},
+            model_settings=assembly.model_settings,
         )
         skill_run.cache_fingerprint = assembly.cache_fingerprint
         run_document.status = "IN_PROGRESS"
@@ -325,7 +326,7 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
                 prompt=f"{assembly.stable_prefix}\n{assembly.dynamic_payload}",
                 instructions=assembly.instructions,
                 output_schema=request.output_schema,
-                model_settings=version.model_policy,
+                model_settings=assembly.model_settings,
                 limits=version.limits,
             )
         )
@@ -338,6 +339,9 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
             }
         )
     db.flush()
+    # Provider batch submission can wait on an external API. The request
+    # manifest is durable and the Core connection is returned first.
+    db.commit()
     submission = get_batch_adapter(batch.provider).submit(
         model=batch.model,
         requests=requests,
@@ -478,6 +482,7 @@ def repair_failed_provider_batch_outputs(
             output = json.loads(response_item.output_text)
             if not isinstance(output, dict):
                 raise TypeError("Prior provider output is not an object")
+            db.commit()
             source = get_preferred_text_source(
                 collection_item_id=document.collection_item_id,
                 actor_user_id=assessment.initiated_by_user_id,
@@ -506,6 +511,7 @@ def repair_failed_provider_batch_outputs(
                     "raw_output_hash": content_hash(output),
                 },
             )
+            db.commit()
             outcome = asyncio.run(
                 normalize_or_repair_document_analysis(
                     output=output,
@@ -601,14 +607,11 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
         raise ValueError("Assessment provider batch has not been submitted")
     assessment, workflow, revision, matter = _records(db, batch.assessment_run_id)
     version = _skill_version(db, assessment, "document_analysis")
+    db.commit()
     state, responses = get_batch_adapter(batch.provider).results(batch.provider_batch_id)
     if state not in SUCCESS_PROVIDER_STATES:
         raise ValueError(f"Assessment provider batch is not ready: {state}")
-    responses_by_id = {
-        item.custom_id: item
-        for item in responses
-        if item.custom_id
-    }
+    responses_by_id = {item.custom_id: item for item in responses if item.custom_id}
     manifest = batch.manifest.get("requests", []) if isinstance(batch.manifest, dict) else []
     completed = 0
     failed = 0
@@ -639,7 +642,7 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             if skill_run is None or run_document is None or document is None:
                 raise ValueError("Assessment batch result references a missing record")
             if response_item is None:
-                raise ValueError("Gemini Batch API returned no result for the document")
+                raise ValueError("Provider Batch API returned no result for the document")
             if response_item.error:
                 raise ValueError(response_item.error)
             if not response_item.output_text:
@@ -647,6 +650,7 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             output = json.loads(response_item.output_text)
             if not isinstance(output, dict):
                 raise TypeError("Batch API document analysis is not an object")
+            db.commit()
             source = get_preferred_text_source(
                 collection_item_id=document.collection_item_id,
                 actor_user_id=assessment.initiated_by_user_id,
@@ -662,11 +666,7 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                 validate_structured_output(output, DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA)
             except ValueError:
                 resolved_models = assessment.configuration_snapshot.get("resolved_models")
-                selected_model = (
-                    resolved_models.get("document_analysis")
-                    if isinstance(resolved_models, dict)
-                    else None
-                )
+                selected_model = resolved_models.get("document_analysis") if isinstance(resolved_models, dict) else None
                 if not isinstance(selected_model, str):
                     raise TypeError("Assessment does not have a pinned document-analysis model")
                 repair_outcome = asyncio.run(

@@ -52,6 +52,19 @@ class EvidenceShadowDisabledError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class PreparedEvidenceUnitModelCall:
+    """Provider-independent inputs for one immutable extraction unit."""
+
+    stable_context: dict[str, Any]
+    dynamic_input: dict[str, Any]
+    cache_identity: dict[str, Any]
+    application_schema: dict[str, Any]
+    provider_schema: dict[str, Any]
+    allowed_citation_ids: tuple[str, ...]
+    evidence_input_hash: str
+
+
 def require_evidence_shadow_enabled() -> None:
     if not get_settings().definition_assessment_evidence_shadow_enabled:
         raise EvidenceShadowDisabledError("Matter Definition evidence shadow execution is disabled by configuration")
@@ -61,9 +74,7 @@ def evidence_extraction_rate_limit_policy() -> ModelRateLimitPolicy:
     settings = get_settings()
     return ModelRateLimitPolicy(
         requests_per_minute=settings.definition_assessment_evidence_extraction_requests_per_minute,
-        input_tokens_per_minute=(
-            settings.definition_assessment_evidence_extraction_input_tokens_per_minute
-        ),
+        input_tokens_per_minute=(settings.definition_assessment_evidence_extraction_input_tokens_per_minute),
         max_retries=settings.model_rate_limit_max_retries,
         retry_base_seconds=settings.model_rate_limit_retry_base_seconds,
         retry_max_seconds=settings.model_rate_limit_retry_max_seconds,
@@ -113,11 +124,80 @@ class ManagedEvidenceUnitExtractor:
     resolved_model: str
     document_context: DocumentEvidenceContext | None = None
     model: Any | None = None
+    model_settings: dict[str, Any] | None = None
     skill_runner: SkillRunner = execute_skill_run
     invocation_id_loader: InvocationIdLoader = _model_invocation_ids
     refresh_workflow_usage: bool = True
-    checkpoint_before_model_call: bool = False
+    checkpoint_before_model_call: bool = True
     rate_limit_policy: ModelRateLimitPolicy | None = None
+
+    def prepare_model_call(
+        self,
+        plan: EvidenceEvaluationPlan,
+        unit: EvidenceExtractionUnitPlan,
+    ) -> PreparedEvidenceUnitModelCall:
+        """Build the same extraction request used by real-time and provider-batch execution."""
+
+        self._validate_context(plan, unit)
+        paragraph_ids = list(dict.fromkeys(segment.paragraph_id for segment in unit.segments))
+        context_citation_ids = sorted(
+            self.document_context.citation_ids if self.document_context is not None else ()
+        )
+        allowed_citation_ids = tuple(dict.fromkeys(paragraph_ids + context_citation_ids))
+        application_schema, provider_schema = extraction_output_schemas(
+            catalog=self.catalog,
+            paragraph_ids=list(allowed_citation_ids),
+            provider=_role_binding(plan).provider,
+        )
+        return PreparedEvidenceUnitModelCall(
+            stable_context={
+                "review_guidance": self.review_guidance,
+                "criterion_catalog": self.catalog.model_dump(mode="json"),
+            },
+            dynamic_input={
+                "metadata_evidence": (
+                    self.document_context.as_model_input() if self.document_context is not None else []
+                ),
+                "source_unit": {
+                    "matter_document_id": str(plan.matter_document_id),
+                    "unit_id": unit.unit_id,
+                    "paragraph_ids": paragraph_ids,
+                    "text": _render_source_unit(self.source_text, unit),
+                },
+            },
+            cache_identity={
+                "tenant_id": str(plan.tenant_id),
+                "matter_id": str(plan.matter_id),
+                "skill_version_id": str(self.skill_version.id),
+            },
+            application_schema=application_schema,
+            provider_schema=provider_schema,
+            allowed_citation_ids=allowed_citation_ids,
+            evidence_input_hash=evidence_observation_source_hash(
+                source_content_hash=plan.source_content_hash,
+                document_context_hash=plan.document_context_hash,
+            ),
+        )
+
+    def normalize_model_output(
+        self,
+        plan: EvidenceEvaluationPlan,
+        unit: EvidenceExtractionUnitPlan,
+        raw_output: dict[str, Any],
+    ) -> ExtractionNormalizationCapture:
+        """Apply the extraction contract to an output returned outside the real-time runner."""
+
+        prepared = self.prepare_model_call(plan, unit)
+        capture = ExtractionNormalizationCapture(
+            catalog=self.catalog,
+            allowed_paragraph_ids=frozenset(prepared.allowed_citation_ids),
+            source_hash=prepared.evidence_input_hash,
+            source_unit_id=unit.unit_id,
+        )
+        capture(raw_output)
+        if capture.result is None:
+            raise RuntimeError("Evidence extraction normalizer did not receive model output")
+        return capture
 
     def _validate_context(
         self,
@@ -173,23 +253,11 @@ class ManagedEvidenceUnitExtractor:
         unit: EvidenceExtractionUnitPlan,
         attempt: int,
     ) -> EvidenceExtractionUnitResult:
-        self._validate_context(plan, unit)
-        paragraph_ids = list(dict.fromkeys(segment.paragraph_id for segment in unit.segments))
-        context_citation_ids = sorted(self.document_context.citation_ids if self.document_context is not None else ())
-        allowed_citation_ids = paragraph_ids + context_citation_ids
-        application_schema, provider_schema = extraction_output_schemas(
-            catalog=self.catalog,
-            paragraph_ids=allowed_citation_ids,
-            provider=_role_binding(plan).provider,
-        )
-        evidence_input_hash = evidence_observation_source_hash(
-            source_content_hash=plan.source_content_hash,
-            document_context_hash=plan.document_context_hash,
-        )
+        prepared = self.prepare_model_call(plan, unit)
         capture = ExtractionNormalizationCapture(
             catalog=self.catalog,
-            allowed_paragraph_ids=set(allowed_citation_ids),
-            source_hash=evidence_input_hash,
+            allowed_paragraph_ids=frozenset(prepared.allowed_citation_ids),
+            source_hash=prepared.evidence_input_hash,
             source_unit_id=unit.unit_id,
         )
         _output, skill_run = await self.skill_runner(
@@ -199,35 +267,19 @@ class ManagedEvidenceUnitExtractor:
             skill_version=self.skill_version,
             scope_type="MATTER_DOCUMENT",
             scope_id=plan.matter_document_id,
-            stable_context={
-                "review_guidance": self.review_guidance,
-                "criterion_catalog": self.catalog.model_dump(mode="json"),
-            },
-            dynamic_input={
-                "metadata_evidence": (
-                    self.document_context.as_model_input() if self.document_context is not None else []
-                ),
-                "source_unit": {
-                    "matter_document_id": str(plan.matter_document_id),
-                    "unit_id": unit.unit_id,
-                    "paragraph_ids": paragraph_ids,
-                    "text": _render_source_unit(self.source_text, unit),
-                },
-            },
-            cache_identity={
-                "tenant_id": str(plan.tenant_id),
-                "matter_id": str(plan.matter_id),
-                "skill_version_id": str(self.skill_version.id),
-            },
+            stable_context=prepared.stable_context,
+            dynamic_input=prepared.dynamic_input,
+            cache_identity=prepared.cache_identity,
             output_normalizers=(capture,),
-            output_schema=application_schema,
-            provider_output_schema=provider_schema,
+            output_schema=prepared.application_schema,
+            provider_output_schema=prepared.provider_schema,
             limits=self.skill_version.limits,
             refresh_workflow_usage=self.refresh_workflow_usage,
             checkpoint_before_model_call=self.checkpoint_before_model_call,
             rate_limit_policy=self.rate_limit_policy or evidence_extraction_rate_limit_policy(),
             usage_job_type="MATTER_DEFINITION_EVIDENCE_SHADOW",
             model=self.model if self.model is not None else self.resolved_model,
+            model_settings=self.model_settings,
         )
         if capture.result is None:
             raise RuntimeError("Evidence extraction normalizer did not receive model output")
@@ -274,6 +326,7 @@ async def execute_managed_evidence_shadow(
     retry_failed: bool = False,
     max_attempts_per_unit: int = 3,
     model: Any | None = None,
+    model_settings: dict[str, Any] | None = None,
     repository: EvidenceShadowArtifactRepository | None = None,
 ) -> EvidenceShadowExecutionOutcome:
     """Run the artifact-backed shadow only when its deployment guard is explicitly enabled."""
@@ -292,6 +345,7 @@ async def execute_managed_evidence_shadow(
         resolved_model=resolved_model,
         document_context=document_context,
         model=model,
+        model_settings=model_settings,
     )
     artifact_repository = repository or WorkflowEvidenceShadowArtifactRepository(
         actor_user_id=workflow.initiated_by_user_id,

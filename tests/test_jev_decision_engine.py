@@ -13,14 +13,23 @@ import httpx2
 import pytest
 from typesafe_sdk import Choice, Noul, Score, TypeSafeAPIError, TypeSafeRateLimitError
 
+from app.analysis_task_evidence import build_inline_evidence_questions
 from app.config import Settings
-from app.decision_engine import DecisionEngineProviderError, DecisionRequest
+from app.decision_engine import (
+    DecisionEngineProviderError,
+    DecisionEnvelope,
+    DecisionEvidenceBinding,
+    DecisionRequest,
+)
 from app.decision_specifications import DecisionSpecification
+from app.document_evidence import segment_paragraphs
 from app.jev_decision_engine import (
     TypeSafeJevDecisionEngine,
+    _aggregate_window_answers,
     _minimum_window_target_tokens,
     _payload_characters,
     _payload_tokens,
+    _request_for_window,
     _window_states,
     build_decision_engine_registry,
     get_shared_decision_engine_registry,
@@ -211,10 +220,12 @@ def test_jev_adapter_translates_questions_and_preserves_provider_semantics() -> 
     assert envelope.usage.output_tokens == 18
     assert envelope.latency_ms == 250
     assert envelope.attempts == 1
-    assert envelope.provider_metadata == {
-        "http_status": 200,
-        "typesafe_request_id": "req_123",
-    }
+    assert envelope.provider_metadata["http_status"] == 200
+    assert envelope.provider_metadata["typesafe_request_id"] == "req_123"
+    assert envelope.provider_metadata["concurrency_wait_ms"] >= 0
+    assert envelope.provider_metadata["rate_limit_wait_ms"] == 0
+    assert envelope.provider_metadata["provider_call_ms"] >= 0
+    assert envelope.provider_metadata["retry_wait_ms"] == 0
 
 
 def test_jev_adapter_partitions_only_the_document_and_aggregates_typed_answers() -> None:
@@ -273,6 +284,89 @@ def test_jev_adapter_partitions_only_the_document_and_aggregates_typed_answers()
     assert envelope.usage.request_count == len(states)
     assert envelope.provider_metadata["windowed"] is True
     assert envelope.provider_metadata["window_count"] == len(states)
+
+
+def test_window_aggregation_binds_inline_evidence_to_winning_answer_window() -> None:
+    specification = DecisionSpecification.model_validate(
+        {
+            "questions": {
+                "privilege.legal_advice": {
+                    "type": "noul",
+                    "instructions": "Does the document request or provide legal advice?",
+                    "criteria": {"true": "Legal advice", "false": "No legal advice"},
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "excerpt_hash": "c" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "ANY_WINDOW"},
+                }
+            },
+            "state_contract": {
+                "builder_version": "document-review-state-v1",
+                "required_paths": ["document.paragraphs"],
+            },
+        }
+    )
+    paragraph_map = segment_paragraphs("Legal advice.\n\nBusiness discussion.")
+    companions, plans = build_inline_evidence_questions(specification, paragraph_map)
+    plan = plans[0]
+    request = DecisionRequest(
+        state={"document": {"paragraphs": [paragraph.as_dict() for paragraph in paragraph_map.paragraphs]}},
+        questions={**specification.questions, **companions},
+        model_key="jev-latest",
+        evidence_bindings={
+            plan.question_key: DecisionEvidenceBinding(
+                question_key=plan.question_key,
+                exists_question_key=str(plan.exists_question_key),
+                location_question_key=str(plan.location_question_key),
+            )
+        },
+    )
+    now = datetime.now(UTC)
+
+    def envelope(primary: float, selected: str, confidence: float, paragraph_id: str) -> DecisionEnvelope:
+        probabilities = {"paragraph_1": 0.01, "paragraph_2": 0.01, "no_support": 0.0}
+        probabilities[selected] = 0.98
+        return DecisionEnvelope.model_validate(
+            {
+                "answers": {
+                    "privilege.legal_advice": {"type": "noul", "noul": primary},
+                    str(plan.exists_question_key): {"type": "noul", "noul": 0.99},
+                    str(plan.location_question_key): {
+                        "type": "choice",
+                        "choice": selected,
+                        "confidence": confidence,
+                        "probabilities": probabilities,
+                    },
+                },
+                "provider": "typesafe",
+                "model": "jev-test",
+                "started_at": now,
+                "completed_at": now,
+                "provider_metadata": {"window_paragraph_ids": [paragraph_id]},
+            }
+        )
+
+    answers = _aggregate_window_answers(
+        request,
+        [
+            envelope(0.9, "paragraph_1", 0.7, "¶1"),
+            envelope(0.2, "paragraph_2", 0.99, "¶2"),
+        ],
+    )
+
+    assert answers["privilege.legal_advice"].noul == 0.9  # type: ignore[union-attr]
+    assert answers[str(plan.location_question_key)].choice == "paragraph_1"  # type: ignore[union-attr]
+    window_request = _request_for_window(
+        request,
+        {"document": {"paragraphs": [paragraph_map.paragraphs[0].as_dict()]}},
+    )
+    assert set(window_request.questions[str(plan.location_question_key)].criteria) == {
+        "paragraph_1",
+        "no_support",
+    }
 
 
 def test_jev_document_windows_keep_duplicate_representations_in_lockstep() -> None:
@@ -397,6 +491,7 @@ def test_jev_adapter_retries_429_and_reports_attempt_count() -> None:
     assert len(limiter.acquisitions) == 2
     assert limiter.deferrals == [(('typesafe', 'jev-latest'), 0.1)]
     assert sleeps == [0.1]
+    assert envelope.provider_metadata["retry_wait_ms"] == 100
 
 
 async def _record_sleep(sleeps: list[float], delay: float) -> None:

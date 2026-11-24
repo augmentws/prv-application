@@ -18,8 +18,11 @@ from app.models import (
     ClassificationTrainingJob,
     Matter,
     MatterAnalysisTaskRun,
+    MatterCodingComparison,
     MatterDocumentImportJob,
     MatterEmbeddingJob,
+    MatterIdentityAnalysis,
+    MatterIdentityRecommendationRun,
     MatterSearchExportJob,
     ReviewBatch,
     ReviewBatchRun,
@@ -38,6 +41,9 @@ CLASSIFICATION_SCORING_RUN_JOB_TYPE = "CLASSIFICATION_SCORING_RUN"
 CLASSIFICATION_PROJECTION_JOB_TYPE = "CLASSIFICATION_PROJECTION"
 REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE = "REVIEW_BATCH_CODING_PROMOTION"
 MATTER_SEARCH_EXPORT_JOB_TYPE = "MATTER_SEARCH_EXPORT"
+CODING_COMPARISON_JOB_TYPE = "CODING_COMPARISON"
+IDENTITY_ANALYSIS_JOB_TYPE = "IDENTITY_ANALYSIS"
+IDENTITY_DOMAIN_RECOMMENDATION_JOB_TYPE = "IDENTITY_DOMAIN_RECOMMENDATION"
 FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE = "FACT_DEVELOPMENT_ANALYSIS_TASK"
 ANALYSIS_TASK_BATCH_SET_JOB_TYPE = "ANALYSIS_TASK_BATCH_SET"
 ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE = "ANALYSIS_TASK_BATCH_SET_RUN"
@@ -68,6 +74,9 @@ JOB_NOTIFICATION_LABELS = {
     CLASSIFICATION_PROJECTION_JOB_TYPE: "Classification projection",
     REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE: "Coding promotion",
     MATTER_SEARCH_EXPORT_JOB_TYPE: "Search export",
+    CODING_COMPARISON_JOB_TYPE: "Coding comparison",
+    IDENTITY_ANALYSIS_JOB_TYPE: "Identity analysis",
+    IDENTITY_DOMAIN_RECOMMENDATION_JOB_TYPE: "Identity domain review",
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE: "Fact development",
 }
 
@@ -686,6 +695,54 @@ class MatterSearchExportExecutionAdapter:
         job.canceled_at = execution.completed_at if execution.status == "CANCELED" else None
 
 
+class CodingComparisonExecutionAdapter:
+    job_type = CODING_COMPARISON_JOB_TYPE
+    supports_retry = False
+
+    def load(
+        self,
+        db: Session,
+        job_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+    ) -> MatterCodingComparison | None:
+        statement = select(MatterCodingComparison).where(MatterCodingComparison.id == job_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return db.scalar(statement)
+
+    def scope(
+        self,
+        db: Session,
+        job: MatterCodingComparison,
+    ) -> tuple[JobScope, Matter | None]:
+        matter = db.get(Matter, job.matter_id)
+        if matter is None:
+            raise JobExecutionNotFound("Coding comparison matter was not found")
+        return JobScope(job.tenant_id, matter.client_id, matter.id), matter
+
+    def project(self, job: MatterCodingComparison, execution: WorkflowRun) -> None:
+        job.current_workflow_run_id = execution.id
+        job.current_workflow_run = execution
+        job.workflow_id = execution.dbos_workflow_id
+        job.current_stage = execution.current_stage or execution.status
+        job.failure_code = execution.failure_code
+        job.failure_summary = execution.failure_summary
+        job.failure_retriable = execution.failure_retriable
+        job.started_at = execution.started_at
+        job.completed_at = execution.completed_at
+        job.compared_document_count = int(execution.progress_completed)
+        if execution.progress_total is not None:
+            job.population_document_count = int(execution.progress_total)
+        if execution.status == "QUEUED":
+            job.status = "QUEUED"
+        elif execution.status in {"RUNNING", "WAITING"}:
+            job.status = "RUNNING"
+        else:
+            job.status = execution.status
+        job.canceled_at = execution.completed_at if execution.status == "CANCELED" else None
+
+
 class FactDevelopmentAnalysisTaskExecutionAdapter:
     job_type = FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE
     supports_retry = True
@@ -740,6 +797,102 @@ class FactDevelopmentAnalysisTaskExecutionAdapter:
         job.canceled_at = (execution.completed_at or utcnow()) if execution.status == "CANCELED" else None
 
 
+class IdentityAnalysisExecutionAdapter:
+    job_type = IDENTITY_ANALYSIS_JOB_TYPE
+    supports_retry = False
+
+    def load(
+        self,
+        db: Session,
+        job_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+    ) -> MatterIdentityAnalysis | None:
+        statement = select(MatterIdentityAnalysis).where(MatterIdentityAnalysis.id == job_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return db.scalar(statement)
+
+    def scope(
+        self,
+        db: Session,
+        job: MatterIdentityAnalysis,
+    ) -> tuple[JobScope, Matter | None]:
+        matter = db.get(Matter, job.matter_id)
+        if matter is None:
+            raise JobExecutionNotFound("Identity Analysis matter was not found")
+        return JobScope(job.tenant_id, matter.client_id, matter.id), matter
+
+    def project(self, job: MatterIdentityAnalysis, execution: WorkflowRun) -> None:
+        job.current_workflow_run_id = execution.id
+        job.current_workflow_run = execution
+        job.workflow_id = execution.dbos_workflow_id
+        job.current_stage = execution.current_stage or execution.status
+        job.failure_code = execution.failure_code
+        job.failure_summary = execution.failure_summary
+        job.failure_retriable = execution.failure_retriable
+        job.started_at = execution.started_at
+        job.completed_at = execution.completed_at
+        job.processed_document_count = int(execution.progress_completed)
+        if execution.progress_total is not None:
+            job.total_document_count = int(execution.progress_total)
+        if execution.status == "QUEUED":
+            job.status = "QUEUED"
+        elif execution.status in {"RUNNING", "WAITING"}:
+            job.status = "RUNNING"
+        else:
+            job.status = execution.status
+        job.canceled_at = (execution.completed_at or utcnow()) if execution.status == "CANCELED" else None
+
+
+class IdentityDomainRecommendationExecutionAdapter:
+    job_type = IDENTITY_DOMAIN_RECOMMENDATION_JOB_TYPE
+    supports_retry = False
+
+    def load(
+        self,
+        db: Session,
+        job_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+    ) -> MatterIdentityRecommendationRun | None:
+        statement = select(MatterIdentityRecommendationRun).where(MatterIdentityRecommendationRun.id == job_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return db.scalar(statement)
+
+    def scope(
+        self,
+        db: Session,
+        job: MatterIdentityRecommendationRun,
+    ) -> tuple[JobScope, Matter | None]:
+        matter = db.get(Matter, job.matter_id)
+        if matter is None:
+            raise JobExecutionNotFound("Identity domain review matter was not found")
+        return JobScope(job.tenant_id, matter.client_id, matter.id), matter
+
+    def project(self, job: MatterIdentityRecommendationRun, execution: WorkflowRun) -> None:
+        job.current_workflow_run_id = execution.id
+        job.current_workflow_run = execution
+        job.workflow_id = execution.dbos_workflow_id
+        job.current_stage = execution.current_stage or execution.status
+        job.failure_code = execution.failure_code
+        job.failure_summary = execution.failure_summary
+        job.failure_retriable = execution.failure_retriable
+        job.started_at = execution.started_at
+        job.completed_at = execution.completed_at
+        job.processed_domain_count = int(execution.progress_completed)
+        if execution.progress_total is not None:
+            job.domain_count = int(execution.progress_total)
+        if execution.status == "QUEUED":
+            job.status = "QUEUED"
+        elif execution.status in {"RUNNING", "WAITING"}:
+            job.status = "RUNNING"
+        else:
+            job.status = execution.status
+        job.canceled_at = (execution.completed_at or utcnow()) if execution.status == "CANCELED" else None
+
+
 _ADAPTERS: dict[str, JobExecutionAdapter] = {
     ANALYSIS_TASK_BATCH_SET_JOB_TYPE: AnalysisTaskBatchSetExecutionAdapter(),
     ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE: AnalysisTaskBatchSetRunExecutionAdapter(),
@@ -753,6 +906,9 @@ _ADAPTERS: dict[str, JobExecutionAdapter] = {
     CLASSIFICATION_PROJECTION_JOB_TYPE: ClassificationProjectionExecutionAdapter(),
     REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE: ReviewBatchCodingPromotionExecutionAdapter(),
     MATTER_SEARCH_EXPORT_JOB_TYPE: MatterSearchExportExecutionAdapter(),
+    CODING_COMPARISON_JOB_TYPE: CodingComparisonExecutionAdapter(),
+    IDENTITY_ANALYSIS_JOB_TYPE: IdentityAnalysisExecutionAdapter(),
+    IDENTITY_DOMAIN_RECOMMENDATION_JOB_TYPE: IdentityDomainRecommendationExecutionAdapter(),
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE: FactDevelopmentAnalysisTaskExecutionAdapter(),
 }
 

@@ -23,6 +23,7 @@ from classification_service.schemas import (
     ClassValue,
     FeatureContract,
     LabelPolicy,
+    LabelSourceSpecification,
     PredictionResolutionPolicy,
     Sha256,
     TargetCardinality,
@@ -566,6 +567,7 @@ CollectionProcessingStatus = Literal["NOT_PROCESSED", "METADATA_INCOMPLETE", "RE
 
 class MatterDocumentSelection(BaseModel):
     mode: MatterDocumentSelectionType = "QUERY"
+    include_complete_families: bool = True
     q: str | None = Field(default=None, max_length=500)
     custodian_ids: list[uuid.UUID] = Field(default_factory=list, max_length=1000)
     file_extensions: list[str] = Field(default_factory=list, max_length=1000)
@@ -658,6 +660,26 @@ class MatterDocumentRead(ORMModel):
     collection_item_id: uuid.UUID
     added_by_import_job_id: uuid.UUID
     created_at: datetime
+
+
+class MatterDocumentFamilyMemberRead(BaseModel):
+    matter_document_id: uuid.UUID | None
+    collection_item_id: uuid.UUID
+    identifier: str
+    display_name: str
+    record_type: str
+    relationship: Literal["PARENT", "ATTACHMENT"]
+    is_current: bool
+    available_in_matter: bool
+
+
+class MatterDocumentFamilyRead(BaseModel):
+    family_id: uuid.UUID | None
+    current_document_id: uuid.UUID
+    current_role: Literal["PARENT", "ATTACHMENT", "STANDALONE"]
+    parent: MatterDocumentFamilyMemberRead | None = None
+    children: list[MatterDocumentFamilyMemberRead] = Field(default_factory=list)
+    unavailable_member_count: int = Field(default=0, ge=0)
 
 
 class MatterDocumentMetadataImportItem(BaseModel):
@@ -1298,9 +1320,11 @@ class MatterSavedSearchExecute(BaseModel):
 ReviewBatchSelectionType = Literal[
     "ALL_MATTER",
     "SEARCH_QUERY",
+    "SAVED_SEARCH",
     "RANDOM_MATTER",
     "RANDOM_BATCH",
     "RANDOM_SAVED_SEARCH",
+    "COMPOSITE_SAVED_SEARCH",
     "RANDOM_ASSESSMENT",
     "DEFINITION_ASSESSMENT",
     "CLASSIFICATION_PREDICTIONS",
@@ -1309,11 +1333,14 @@ ReviewBatchSelectionType = Literal[
     "EXPLICIT_DOCUMENTS",
 ]
 InteractiveReviewBatchSelectionType = Literal[
+    "EXPLICIT_DOCUMENTS",
     "ALL_MATTER",
     "SEARCH_QUERY",
+    "SAVED_SEARCH",
     "RANDOM_MATTER",
     "RANDOM_BATCH",
     "RANDOM_SAVED_SEARCH",
+    "COMPOSITE_SAVED_SEARCH",
     "RANDOM_ASSESSMENT",
 ]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
@@ -1338,12 +1365,17 @@ class ReviewBatchCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
     selection_type: InteractiveReviewBatchSelectionType
+    document_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=100_000)
     search: MatterSearchRequest | None = None
     source_batch_id: uuid.UUID | None = None
     saved_search_id: uuid.UUID | None = None
+    fixed_saved_search_id: uuid.UUID | None = None
+    sample_saved_search_id: uuid.UUID | None = None
     assessment_run_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
     random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_search_index_generation_id: uuid.UUID | None = None
+    preview_hash: str | None = Field(default=None, min_length=64, max_length=64)
     include_complete_families: bool = False
     assigned_user_id: uuid.UUID | None = None
     reviewer_value_visibility: ReviewBatchValueVisibility = "OWN_VALUES"
@@ -1352,6 +1384,13 @@ class ReviewBatchCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ReviewBatchCreate":
+        if self.selection_type == "EXPLICIT_DOCUMENTS":
+            if not self.document_ids:
+                raise ValueError("EXPLICIT_DOCUMENTS batches require document_ids")
+            if len(self.document_ids) != len(set(self.document_ids)):
+                raise ValueError("EXPLICIT_DOCUMENTS document_ids must be unique")
+        elif self.document_ids is not None:
+            raise ValueError("document_ids is only valid for EXPLICIT_DOCUMENTS batches")
         if self.selection_type == "SEARCH_QUERY":
             if self.search is None:
                 raise ValueError("SEARCH_QUERY batches require a search")
@@ -1364,13 +1403,28 @@ class ReviewBatchCreate(BaseModel):
                 raise ValueError("RANDOM_BATCH batches require source_batch_id")
         elif self.source_batch_id is not None:
             raise ValueError("source_batch_id is only valid for RANDOM_BATCH batches")
-        if self.selection_type == "RANDOM_SAVED_SEARCH":
+        if self.selection_type in {"SAVED_SEARCH", "RANDOM_SAVED_SEARCH"}:
             if self.saved_search_id is None:
-                raise ValueError("RANDOM_SAVED_SEARCH batches require saved_search_id")
-            if self.sample_size is None:
+                raise ValueError(f"{self.selection_type} batches require saved_search_id")
+            if self.selection_type == "RANDOM_SAVED_SEARCH" and self.sample_size is None:
                 raise ValueError("RANDOM_SAVED_SEARCH batches require sample_size")
         elif self.saved_search_id is not None:
-            raise ValueError("saved_search_id is only valid for RANDOM_SAVED_SEARCH batches")
+            raise ValueError("saved_search_id is only valid for saved-search batches")
+        if self.selection_type == "COMPOSITE_SAVED_SEARCH":
+            if self.fixed_saved_search_id is None or self.sample_saved_search_id is None:
+                raise ValueError("COMPOSITE_SAVED_SEARCH batches require both saved searches")
+            if self.sample_size is None:
+                raise ValueError("COMPOSITE_SAVED_SEARCH batches require sample_size")
+            if self.random_seed is None:
+                raise ValueError("COMPOSITE_SAVED_SEARCH batches require random_seed")
+            if self.expected_search_index_generation_id is None or self.preview_hash is None:
+                raise ValueError("COMPOSITE_SAVED_SEARCH batches require a current population preview")
+        elif self.fixed_saved_search_id is not None or self.sample_saved_search_id is not None:
+            raise ValueError("composite saved-search IDs are only valid for composite batches")
+        if self.selection_type != "COMPOSITE_SAVED_SEARCH" and (
+            self.expected_search_index_generation_id is not None or self.preview_hash is not None
+        ):
+            raise ValueError("population preview fields are only valid for composite batches")
         if self.selection_type == "RANDOM_ASSESSMENT":
             if self.assessment_run_id is None:
                 raise ValueError("RANDOM_ASSESSMENT batches require assessment_run_id")
@@ -1378,9 +1432,36 @@ class ReviewBatchCreate(BaseModel):
                 raise ValueError("RANDOM_ASSESSMENT batches require sample_size")
         elif self.assessment_run_id is not None:
             raise ValueError("assessment_run_id is only valid for RANDOM_ASSESSMENT batches")
-        if self.selection_type in {"ALL_MATTER", "SEARCH_QUERY"} and self.sample_size is not None:
+        if (
+            not self.selection_type.startswith("RANDOM")
+            and self.selection_type != "COMPOSITE_SAVED_SEARCH"
+            and self.sample_size is not None
+        ):
             raise ValueError("sample_size is only valid for random batches")
         return self
+
+
+class ReviewBatchCompositePreviewRequest(BaseModel):
+    fixed_saved_search_id: uuid.UUID
+    sample_saved_search_id: uuid.UUID
+    sample_size: int = Field(ge=1, le=10_000_000)
+    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    include_complete_families: bool = False
+
+
+class ReviewBatchCompositePreviewRead(BaseModel):
+    fixed_match_count: int
+    sample_match_count: int
+    overlap_count: int
+    eligible_sample_count: int
+    requested_sample_count: int
+    selected_sample_count: int
+    family_added_count: int
+    final_document_count: int
+    random_seed: str
+    search_index_generation_id: uuid.UUID
+    preview_hash: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ReviewBatchAssignmentUpdate(BaseModel):
@@ -1529,6 +1610,7 @@ class ReviewBatchAnalysisRunCreate(BaseModel):
 
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID | None = None
+    execution_profile_id: uuid.UUID | None = None
 
 
 class QuestionAnsweringWholeMatterRunCreate(BaseModel):
@@ -2065,6 +2147,289 @@ class ReviewBatchCodingComparisonRead(BaseModel):
     multi_source_agreement: ReviewBatchMultiSourceAgreementRead
     pairwise_agreements: list[ReviewBatchPairwiseAgreementRead]
     documents: list[ReviewBatchComparisonDocumentRead]
+
+
+MatterCodingComparisonSourceType = Literal[
+    "QA_RUN_GROUP",
+    "REVIEWER_CODING_GROUP",
+    "MATTER_FIELD",
+    "CLASSIFIER_SCORING_RUN",
+]
+
+
+class MatterCodingComparisonReviewerSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    revision: int = Field(ge=0)
+
+
+class MatterCodingComparisonSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(min_length=1, max_length=100)
+    source_type: MatterCodingComparisonSourceType
+    label: str = Field(min_length=1, max_length=200)
+    metadata_definition_id: uuid.UUID
+    run_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    reviewer_codings: list[MatterCodingComparisonReviewerSnapshot] = Field(default_factory=list, max_length=100)
+    scoring_run_id: uuid.UUID | None = None
+    value_mapping: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("value_mapping")
+    @classmethod
+    def validate_value_mapping(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 500:
+            raise ValueError("A comparison source may map at most 500 values")
+        normalized = {str(key).strip(): str(target).strip() for key, target in value.items()}
+        if any(not key or not target or len(key) > 1000 or len(target) > 200 for key, target in normalized.items()):
+            raise ValueError("Comparison mapping keys and canonical values must be non-empty and bounded")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_source_shape(self) -> "MatterCodingComparisonSource":
+        if self.source_type == "QA_RUN_GROUP":
+            if not self.run_ids or self.reviewer_codings or self.scoring_run_id is not None:
+                raise ValueError("QA run sources require run_ids and cannot select a scoring run")
+            if len(self.run_ids) != len(set(self.run_ids)):
+                raise ValueError("QA run IDs must be unique")
+        elif self.source_type == "REVIEWER_CODING_GROUP":
+            if not self.reviewer_codings or self.run_ids or self.scoring_run_id is not None:
+                raise ValueError("Reviewer coding sources require reviewer_codings only")
+            coding_ids = [coding.id for coding in self.reviewer_codings]
+            if len(coding_ids) != len(set(coding_ids)):
+                raise ValueError("Reviewer coding IDs must be unique")
+        elif self.source_type == "CLASSIFIER_SCORING_RUN":
+            if self.scoring_run_id is None or self.run_ids or self.reviewer_codings:
+                raise ValueError("Classifier sources require one scoring_run_id")
+        elif self.run_ids or self.reviewer_codings or self.scoring_run_id is not None:
+            raise ValueError("Matter field sources cannot select runs")
+        return self
+
+
+class MatterCodingComparisonCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    review_batch_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+    sources: list[MatterCodingComparisonSource] = Field(min_length=2, max_length=12)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_comparison(self) -> "MatterCodingComparisonCreate":
+        if len(self.review_batch_ids) != len(set(self.review_batch_ids)):
+            raise ValueError("Review batches must be unique")
+        source_ids = [source.source_id for source in self.sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("Comparison source IDs must be unique")
+        self.name = self.name.strip()
+        self.idempotency_key = self.idempotency_key.strip()
+        return self
+
+
+class MatterCodingComparisonBatchOptionRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    document_count: int = Field(ge=0)
+
+
+class MatterCodingComparisonFieldOptionRead(BaseModel):
+    id: uuid.UUID
+    key: str
+    display_name: str
+    type: MetadataType
+    cardinality: Cardinality
+    allowed_values: list[dict[str, Any]]
+
+
+class MatterCodingComparisonRunOptionRead(BaseModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    label: str
+    run_type: ReviewBatchRunType
+    status: ReviewBatchRunStatus
+    metadata_definition_ids: list[uuid.UUID]
+
+
+class MatterCodingComparisonScoringRunOptionRead(BaseModel):
+    id: uuid.UUID
+    label: str
+    metadata_definition_id: uuid.UUID
+    population_document_count: int = Field(ge=0)
+    completed_at: datetime | None
+
+
+class MatterCodingComparisonReviewerCodingOptionRead(BaseModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    reviewer_user_id: uuid.UUID
+    label: str
+    detail: str
+    revision: int = Field(ge=0)
+    metadata_definition_ids: list[uuid.UUID]
+
+
+class MatterCodingComparisonOptionsRead(BaseModel):
+    batches: list[MatterCodingComparisonBatchOptionRead]
+    fields: list[MatterCodingComparisonFieldOptionRead]
+    qa_runs: list[MatterCodingComparisonRunOptionRead]
+    reviewer_codings: list[MatterCodingComparisonReviewerCodingOptionRead]
+    classifier_scoring_runs: list[MatterCodingComparisonScoringRunOptionRead]
+
+
+class MatterCodingComparisonRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    name: str
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+    current_stage: str | None
+    configuration: dict[str, Any]
+    population_document_count: int
+    compared_document_count: int
+    population_artifact_id: uuid.UUID | None
+    result_artifact_id: uuid.UUID | None
+    summary: dict[str, Any] | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class MatterIdentityAnalysisRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    current_stage: str | None
+    total_document_count: int
+    processed_document_count: int
+    documents_with_participants_count: int
+    identity_count: int
+    domain_count: int
+    invalid_participant_count: int
+    result_artifact_id: uuid.UUID | None
+    summary: dict[str, Any] | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class MatterIdentityRecommendationRunRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    identity_analysis_id: uuid.UUID
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    current_stage: str | None
+    domain_count: int
+    processed_domain_count: int
+    recommendation_count: int
+    result_artifact_id: uuid.UUID | None
+    summary: dict[str, Any] | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+RecommendedOrganizationCategoryLiteral = Literal[
+    "LAW_FIRM",
+    "CORPORATION",
+    "GOVERNMENT",
+    "ACCOUNTING_FIRM",
+    "CONSULTING_FIRM",
+    "INSURER",
+    "EMAIL_PROVIDER",
+    "OTHER",
+]
+
+
+class MatterIdentityDomainRecommendationRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str
+    canonical_domain: str
+    organization_name: str
+    organization_category: RecommendedOrganizationCategoryLiteral
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    evidence_signals: list[str]
+    alternative_categories: list[str]
+    decision: Literal["ACCEPTED", "REJECTED"] | None = None
+    entity_id: uuid.UUID | None = None
+    proposed_entity_id: uuid.UUID | None = None
+    publication_status: Literal[
+        "PROPOSED",
+        "ALREADY_PROPOSED",
+        "ALREADY_CONFIRMED",
+        "SKIPPED_REJECTED_MAPPING",
+    ] | None = None
+
+
+class MatterIdentityDomainRecommendationPage(BaseModel):
+    run_id: uuid.UUID
+    reviewed_domain_count: int
+    recommendations: list[MatterIdentityDomainRecommendationRead]
+
+
+class MatterIdentityDomainDecisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(min_length=3, max_length=253)
+    decision: Literal["ACCEPTED", "REJECTED"]
+    organization_name: str | None = Field(default=None, min_length=1, max_length=300)
+    entity_id: uuid.UUID | None = None
+
+
+class MatterIdentityDomainDecisionRead(ORMModel):
+    id: uuid.UUID
+    recommendation_run_id: uuid.UUID
+    matter_id: uuid.UUID
+    domain: str
+    decision: Literal["ACCEPTED", "REJECTED"]
+    entity_id: uuid.UUID | None
+    organization_name: str
+    organization_category: RecommendedOrganizationCategoryLiteral
+    decided_by_user_id: uuid.UUID
+    decided_at: datetime
+
+
+class MatterCodingComparisonDocumentSourceRead(BaseModel):
+    source_id: str
+    state: Literal["EVALUATED", "MISSING", "FAILED", "SKIPPED", "INCOMPLETE", "CONFLICTED", "UNMAPPED"]
+    value_keys: list[str]
+    raw_value_keys: list[str]
+
+
+class MatterCodingComparisonDocumentRead(BaseModel):
+    ordinal: int = Field(ge=1)
+    matter_document_id: uuid.UUID
+    collection_item_id: uuid.UUID
+    batch_ids: list[uuid.UUID]
+    agreement_status: Literal["EXACT", "PARTIAL", "DISAGREEMENT", "INCOMPLETE"]
+    sources: list[MatterCodingComparisonDocumentSourceRead]
+
+
+class MatterCodingComparisonDocumentPage(BaseModel):
+    comparison_id: uuid.UUID
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    items: list[MatterCodingComparisonDocumentRead]
 
 
 class SearchIndexGenerationRead(ORMModel):
@@ -4060,6 +4425,7 @@ class ClassificationTargetDistributionRequest(BaseModel):
 
     training_scope: TrainingScopeSpecification
     hierarchy_level: int | None = Field(default=None, ge=1, le=32)
+    label_source: LabelSourceSpecification | None = None
 
 
 class ClassificationClassCount(BaseModel):
@@ -4661,6 +5027,17 @@ def normalize_email(email: str) -> str:
 
 
 EntityTypeLiteral = Literal["PERSON", "ORGANIZATION"]
+OrganizationCategoryLiteral = Literal[
+    "LAW_FIRM",
+    "CORPORATION",
+    "GOVERNMENT",
+    "ACCOUNTING_FIRM",
+    "CONSULTING_FIRM",
+    "INSURER",
+    "EMAIL_PROVIDER",
+    "OTHER",
+    "UNKNOWN",
+]
 FactDatePrecision = Literal["DAY", "MONTH", "QUARTER", "YEAR", "RANGE", "UNKNOWN"]
 FactDateBasis = Literal["STATED_IN_TEXT", "DOCUMENT_DATE", "INFERRED"]
 FactParticipantRole = Literal["PARTICIPANT_ACTOR", "PARTICIPANT_RECIPIENT"]
@@ -4671,6 +5048,7 @@ class MatterEntityCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     entity_type: EntityTypeLiteral
+    organization_category: OrganizationCategoryLiteral | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=300)
     email: str | None = Field(default=None, max_length=320)
     title: str | None = Field(default=None, max_length=200)
@@ -4683,6 +5061,8 @@ class MatterEntityCreate(BaseModel):
     def validate_identity(self) -> "MatterEntityCreate":
         if not self.display_name and not self.email:
             raise ValueError("An entity requires a display name or an email address")
+        if self.entity_type != "ORGANIZATION" and self.organization_category is not None:
+            raise ValueError("Only organizations have an organization category")
         return self
 
 
@@ -4693,6 +5073,7 @@ class MatterEntityUpdate(BaseModel):
 
     lock_version: int = Field(ge=1)
     display_name: str | None = Field(default=None, min_length=1, max_length=300)
+    organization_category: OrganizationCategoryLiteral | None = None
     title: str | None = Field(default=None, max_length=200)
     organization_id: uuid.UUID | None = None
     custodian_id: uuid.UUID | None = None
@@ -4729,10 +5110,82 @@ class MatterEntityVariantRead(ORMModel):
     created_at: datetime
 
 
+class MatterEntityDomainRead(ORMModel):
+    id: uuid.UUID
+    domain: str
+    created_at: datetime
+
+
+class MatterEntityRelationshipCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_entity_id: uuid.UUID
+    target_entity_id: uuid.UUID
+    relationship_type: str = Field(min_length=1, max_length=80, pattern=r"^[A-Z][A-Z0-9_]*$")
+    status: Literal["PROPOSED", "CONFIRMED"] = "CONFIRMED"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    rationale: str | None = Field(default=None, max_length=4_000)
+    effective_from: date | None = None
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "MatterEntityRelationshipCreate":
+        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
+            raise ValueError("Relationship end date cannot precede its start date")
+        return self
+
+
+class MatterEntityRelationshipAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+
+
+class MatterEntityRelationshipPartyRead(ORMModel):
+    id: uuid.UUID
+    entity_type: EntityTypeLiteral
+    organization_category: OrganizationCategoryLiteral | None
+    display_name: str | None
+    email: str | None
+    status: Literal["PROPOSED", "CONFIRMED", "REJECTED"]
+
+
+class MatterEntityRelationshipRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    relationship_type: str
+    status: Literal["PROPOSED", "CONFIRMED", "REJECTED"]
+    confidence: float | None
+    rationale: str | None
+    effective_from: date | None
+    effective_to: date | None
+    created_by_user_id: uuid.UUID | None
+    created_by_workflow_run_id: uuid.UUID | None
+    decided_by_user_id: uuid.UUID | None
+    decided_at: datetime | None
+    lock_version: int
+    created_at: datetime
+    updated_at: datetime
+    source: MatterEntityRelationshipPartyRead
+    target: MatterEntityRelationshipPartyRead
+    forward_label: str
+    inverse_label: str
+
+
+class MatterEntityRelationshipDefinitionRead(BaseModel):
+    key: str
+    forward_label: str
+    inverse_label: str
+    source_entity_types: list[EntityTypeLiteral]
+    source_organization_categories: list[OrganizationCategoryLiteral] | None
+    target_entity_types: list[EntityTypeLiteral]
+
+
 class MatterEntityRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
     entity_type: EntityTypeLiteral
+    organization_category: OrganizationCategoryLiteral | None
     display_name: str | None
     email: str | None
     title: str | None
@@ -4746,6 +5199,7 @@ class MatterEntityRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     variants: list[MatterEntityVariantRead] = Field(default_factory=list)
+    domains: list[MatterEntityDomainRead] = Field(default_factory=list)
     fact_count: int = 0
 
 
@@ -5088,6 +5542,65 @@ class ReviewWorkflowTemplateRead(BaseModel):
     stages: list[ReviewWorkflowStageRead]
 
 
+class PrivilegeReviewFoundationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    population_type: Literal["REVIEW_BATCHES", "ALL_MATTER"] = "REVIEW_BATCHES"
+    review_batch_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    target_metadata_definition_id: uuid.UUID
+    review_policy: Literal["HUMAN_ONLY", "LLM_THEN_HUMAN", "HYBRID"] = "LLM_THEN_HUMAN"
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_population(self) -> "PrivilegeReviewFoundationCreate":
+        if self.population_type == "REVIEW_BATCHES" and not self.review_batch_ids:
+            raise ValueError("Select at least one review batch")
+        if self.population_type == "ALL_MATTER" and self.review_batch_ids:
+            raise ValueError("ALL_MATTER creates its own batch and does not accept review_batch_ids")
+        return self
+
+
+class PrivilegeFamilyContextPrepare(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_program_version_id: uuid.UUID
+
+
+class PrivilegeBacktestCohortPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    truth_metadata_definition_id: uuid.UUID
+    per_stratum: int = Field(default=20, ge=1, le=1_000)
+    random_seed: str = Field(default="privilege-backtest-v1", min_length=1, max_length=100)
+
+
+class PrivilegeBacktestCohortStratumRead(BaseModel):
+    key: str
+    eligible_family_count: int
+    assigned_family_count: int
+    selected_family_count: int
+    shortfall: int
+
+
+class PrivilegeBacktestCohortPreviewRead(BaseModel):
+    schema_version: int
+    source_program_id: uuid.UUID
+    source_program_run_id: uuid.UUID
+    source_adjudication_run_id: uuid.UUID
+    source_program_version_id: uuid.UUID
+    evidence_packets_artifact_id: uuid.UUID
+    evidence_packets_content_hash: str
+    truth_metadata_definition_id: uuid.UUID
+    per_stratum: int
+    random_seed: str
+    selected_family_keys: list[str]
+    selected_document_ids: list[uuid.UUID]
+    strata: list[PrivilegeBacktestCohortStratumRead]
+    family_count: int
+    document_count: int
+    preview_hash: str
+
+
 class ReviewProgramCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -5097,6 +5610,7 @@ class ReviewProgramCreate(BaseModel):
     description: str | None = Field(default=None, max_length=4_000)
     owner_user_id: uuid.UUID | None = None
     matter_definition_id: uuid.UUID | None = None
+    privilege_review: PrivilegeReviewFoundationCreate | None = None
 
 
 class ReviewProgramVersionRead(ORMModel):
@@ -5246,10 +5760,13 @@ class ReviewProgramClassifierImprovementQuery(BaseModel):
 
     metadata_definition_id: uuid.UUID
     class_key: str = Field(min_length=1, max_length=500)
+    criterion_key: str = Field(min_length=1, max_length=500)
     query: str = Field(min_length=1, max_length=2000)
     quota: int = Field(default=50, ge=1, le=25_000)
+    expanded_query: str | None = Field(default=None, max_length=2000)
+    expanded_quota: int = Field(default=50, ge=1, le=25_000)
 
-    @field_validator("class_key", "query")
+    @field_validator("class_key", "criterion_key", "query")
     @classmethod
     def normalize_improvement_text(cls, value: str) -> str:
         normalized = " ".join(value.split())
@@ -5257,22 +5774,62 @@ class ReviewProgramClassifierImprovementQuery(BaseModel):
             raise ValueError("Classifier improvement text is required")
         return normalized
 
+    @field_validator("expanded_query")
+    @classmethod
+    def normalize_optional_expansion(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+
+class ReviewProgramClassifierImprovementPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    queries: list[ReviewProgramClassifierImprovementQuery] = Field(min_length=1, max_length=100)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_preview(self) -> "ReviewProgramClassifierImprovementPreview":
+        targets = [(query.metadata_definition_id, query.class_key, query.criterion_key) for query in self.queries]
+        if len(targets) != len(set(targets)):
+            raise ValueError("Classifier improvement targets must be unique")
+        requested = sum(query.quota + (query.expanded_quota if query.expanded_query else 0) for query in self.queries)
+        if requested > 100_000:
+            raise ValueError("Classifier improvement population cannot exceed 100,000 documents")
+        return self
+
+
+class ReviewProgramClassifierImprovementPreviewRead(BaseModel):
+    retrieval_preview_hash: str
+    requested_document_count: int
+    selected_document_count: int
+    estimated_batch_count: int
+    excluded_prior_program_document_count: int
+    excluded_completed_human_review_document_count: int
+    overlap_removed_count: int
+    query_yields: list[dict[str, Any]]
+    similarity: dict[str, Any]
+    expansion_recommended: bool
+
 
 class ReviewProgramClassifierImprovementSetup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     preview_hash: str = Field(min_length=64, max_length=64)
+    retrieval_preview_hash: str = Field(min_length=64, max_length=64)
     queries: list[ReviewProgramClassifierImprovementQuery] = Field(min_length=1, max_length=100)
-    control_sample_size: int = Field(default=25, ge=0, le=25_000)
     target_batch_size: int = Field(default=100, ge=1, le=10_000)
     keep_families_together: bool = True
 
     @model_validator(mode="after")
     def validate_improvement_setup(self) -> "ReviewProgramClassifierImprovementSetup":
-        targets = [(query.metadata_definition_id, query.class_key) for query in self.queries]
+        targets = [(query.metadata_definition_id, query.class_key, query.criterion_key) for query in self.queries]
         if len(targets) != len(set(targets)):
             raise ValueError("Classifier improvement targets must be unique")
-        if sum(query.quota for query in self.queries) + self.control_sample_size > 100_000:
+        if sum(query.quota + (query.expanded_quota if query.expanded_query else 0) for query in self.queries) > 100_000:
             raise ValueError("Classifier improvement population cannot exceed 100,000 documents")
         return self
 

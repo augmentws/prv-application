@@ -31,7 +31,14 @@ from app.models import (
     WorkflowRun,
 )
 from app.search.client import OpenSearchError
-from app.workflows.analysis_task_batch import BATCH_QUEUE, DOCUMENT_QUEUE
+from app.workflows.analysis_task_batch import (
+    BATCH_QUEUE,
+    DOCUMENT_QUEUE,
+    JEV_BATCH_QUEUE,
+    JEV_DOCUMENT_QUEUE,
+    OPENAI_BATCH_QUEUE,
+    OPENAI_DOCUMENT_QUEUE,
+)
 from app.workflows.analysis_task_batch_set_runs import PARENT_QUEUE
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
 from tests.test_analysis_tasks import _specification
@@ -44,6 +51,10 @@ def test_question_answering_queues_use_explicit_global_limits() -> None:
     assert BATCH_QUEUE.global_concurrency == settings.qa_batch_concurrency
     assert PARENT_QUEUE.global_concurrency == settings.qa_batch_concurrency
     assert DOCUMENT_QUEUE.global_concurrency == settings.qa_document_concurrency
+    assert JEV_BATCH_QUEUE.global_concurrency == settings.qa_batch_concurrency
+    assert OPENAI_BATCH_QUEUE.global_concurrency == settings.qa_batch_concurrency
+    assert JEV_DOCUMENT_QUEUE.global_concurrency == settings.qa_jev_document_concurrency
+    assert OPENAI_DOCUMENT_QUEUE.global_concurrency == settings.qa_openai_document_concurrency
 
 
 def _published_partitioned_task(client: TestClient, token: str, matter_id: str) -> dict:
@@ -165,6 +176,63 @@ def test_task_batch_search_uses_scaled_query_limits(
     assert [item["requested"] for item in population.query_yields] == [4, 2]
 
 
+def test_task_batch_search_applies_query_specific_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matter_id = uuid.uuid4()
+    first_excluded_id = uuid.uuid4()
+    second_excluded_id = uuid.uuid4()
+    first_selected_id = uuid.uuid4()
+    second_selected_id = uuid.uuid4()
+    exclusions: list[set[uuid.UUID]] = []
+
+    monkeypatch.setattr(batch_sets, "task_batch_document_ids", lambda *args, **kwargs: ([], set()))
+
+    def fake_search_document_ids(*args, **kwargs):
+        exclusions.append(set(kwargs["excluded_document_ids"]))
+        if len(exclusions) == 1:
+            # Return the excluded document deliberately to verify the local
+            # eligibility guard as well as the provider-facing filter.
+            return [first_excluded_id, first_selected_id]
+        return [second_excluded_id, second_selected_id]
+
+    monkeypatch.setattr(batch_sets, "search_document_ids", fake_search_document_ids)
+    population = batch_sets.select_task_batch_search_population(
+        SimpleNamespace(),
+        matter=SimpleNamespace(id=matter_id),
+        task=SimpleNamespace(id=uuid.uuid4(), matter_id=matter_id),
+        generation=SimpleNamespace(),
+        queries=[
+            batch_sets.TaskBatchSearchQuery(
+                ordinal=1,
+                key="first",
+                label="First field",
+                reason="FIRST",
+                search_definition={"query": "first", "search_mode": "KEYWORD"},
+                quota=1,
+                excluded_document_ids=frozenset({first_excluded_id}),
+            ),
+            batch_sets.TaskBatchSearchQuery(
+                ordinal=2,
+                key="second",
+                label="Second field",
+                reason="SECOND",
+                search_definition={"query": "second", "search_mode": "KEYWORD"},
+                quota=1,
+                excluded_document_ids=frozenset({second_excluded_id}),
+            ),
+        ],
+        target_document_count=2,
+        settings=SimpleNamespace(),
+    )
+
+    assert exclusions == [
+        {first_excluded_id},
+        {second_excluded_id, first_selected_id},
+    ]
+    assert population.document_ids == [first_selected_id, second_selected_id]
+
+
 def test_task_batch_search_identifies_query_that_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -173,9 +241,7 @@ def test_task_batch_search_identifies_query_that_failed(
     monkeypatch.setattr(
         batch_sets,
         "search_document_ids",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OpenSearchError("OpenSearch request failed: timed out")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(OpenSearchError("OpenSearch request failed: timed out")),
     )
 
     with pytest.raises(
@@ -242,9 +308,7 @@ def test_batch_set_run_creates_one_parent_with_ordered_child_references(
     assert run["status"] == "QUEUED"
     assert run["child_count"] == 3
     assert [child["ordinal"] for child in run["children"]] == [1, 2, 3]
-    assert [child["review_batch_id"] for child in run["children"]] == [
-        child["id"] for child in batch_set["children"]
-    ]
+    assert [child["review_batch_id"] for child in run["children"]] == [child["id"] for child in batch_set["children"]]
     assert run["execution"]["status"] == "QUEUED"
 
     duplicate = client.post(path, headers=auth(token), json=payload)
@@ -342,10 +406,7 @@ def test_input_manifest_population_preserves_frozen_order(
 
         def rows(self, start, count):
             assert (start, count) == (0, len(frozen_order))
-            return [
-                {"matter_document_id": str(document_id), "input_status": "READY"}
-                for document_id in frozen_order
-            ]
+            return [{"matter_document_id": str(document_id), "input_status": "READY"} for document_id in frozen_order]
 
     monkeypatch.setattr(batch_sets, "AnalysisInputManifestReader", FakeReader)
     batch_set = batch_sets.create_batch_set(
@@ -619,6 +680,7 @@ def test_failed_batch_set_can_retry_with_a_new_execution(
     task = _published_partitioned_task(client, token, matter_id)
     user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
     add_documents(matter_id, user_id, count=3)
+
     def fail_grouping_snapshots(**_: object) -> dict[uuid.UUID, CollectionItemGroupingSnapshot]:
         raise batch_sets.AnalysisTaskBatchSetError("Temporary family lookup failure")
 
@@ -852,14 +914,7 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
             if search_pipeline and "sort" not in body:
                 offset = int(body.get("from", 0))
                 page = hybrid_relevance_ids[offset : offset + int(body["size"])]
-                return {
-                    "hits": {
-                        "hits": [
-                            {"_source": {"document_id": str(document_id)}}
-                            for document_id in page
-                        ]
-                    }
-                }
+                return {"hits": {"hits": [{"_source": {"document_id": str(document_id)}} for document_id in page]}}
             return {
                 "hits": {
                     "hits": [
@@ -894,20 +949,26 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     assert semantic_pipeline is None
     hybrid_body, hybrid_pipeline = search_calls[-1]
     assert hybrid_body["sort"] == [{"document_id": "asc"}]
-    assert hybrid_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+    assert (
+        hybrid_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"]
+        == query_vector
+    )
     assert ensured_pipelines == [batch_sets.RRF_SEARCH_PIPELINE]
     assert hybrid_pipeline == batch_sets.RRF_SEARCH_PIPELINE
 
-    assert batch_sets.search_document_ids(
-        db,
-        matter=matter,
-        generation=generation,
-        search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
-        settings=batch_sets.get_settings(),
-        limit=501,
-        relevance_order=True,
-        excluded_document_ids={uuid.UUID(document_ids[3])},
-    ) == hybrid_relevance_ids
+    assert (
+        batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
+            settings=batch_sets.get_settings(),
+            limit=501,
+            relevance_order=True,
+            excluded_document_ids={uuid.UUID(document_ids[3])},
+        )
+        == hybrid_relevance_ids
+    )
     relevance_calls = search_calls[-4:]
     first_relevance_body, first_relevance_pipeline = relevance_calls[0]
     second_relevance_body, second_relevance_pipeline = relevance_calls[1]
@@ -917,7 +978,9 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     assert first_relevance_body["size"] == 150
     assert first_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
     keyword_exclusions = first_relevance_body["query"]["hybrid"]["queries"][0]["bool"]["filter"][-1]
-    semantic_exclusions = first_relevance_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["filter"]["bool"]["filter"][-1]
+    semantic_exclusions = first_relevance_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"][
+        "chunks.embedding"
+    ]["filter"]["bool"]["filter"][-1]
     expected_exclusions = {"bool": {"must_not": [{"terms": {"document_id": [document_ids[3]]}}]}}
     assert keyword_exclusions == expected_exclusions
     assert semantic_exclusions == expected_exclusions
@@ -930,30 +993,36 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     assert final_relevance_body["query"]["hybrid"]["pagination_depth"] == 600
     assert final_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
 
-    assert batch_sets.search_document_ids(
-        db,
-        matter=matter,
-        generation=generation,
-        search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
-        settings=batch_sets.get_settings(),
-        limit=150,
-        relevance_order=True,
-    ) == hybrid_relevance_ids[:150]
-    bounded_relevance_body, _ = search_calls[-1]
-    assert bounded_relevance_body["size"] == 150
-    assert bounded_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
-
-    assert len(
+    assert (
         batch_sets.search_document_ids(
             db,
             matter=matter,
             generation=generation,
-            search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+            search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
             settings=batch_sets.get_settings(),
-            limit=250,
+            limit=150,
             relevance_order=True,
         )
-    ) == 3
+        == hybrid_relevance_ids[:150]
+    )
+    bounded_relevance_body, _ = search_calls[-1]
+    assert bounded_relevance_body["size"] == 150
+    assert bounded_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
+
+    assert (
+        len(
+            batch_sets.search_document_ids(
+                db,
+                matter=matter,
+                generation=generation,
+                search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+                settings=batch_sets.get_settings(),
+                limit=250,
+                relevance_order=True,
+            )
+        )
+        == 3
+    )
     semantic_population_body, _ = search_calls[-1]
     assert semantic_population_body["size"] == 250
     assert semantic_population_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["k"] == 250
@@ -961,17 +1030,20 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     retry_sleeps: list[float] = []
     transient_failures[0] = 2
     monkeypatch.setattr(batch_sets.time, "sleep", retry_sleeps.append)
-    assert len(
-        batch_sets.search_document_ids(
-            db,
-            matter=matter,
-            generation=generation,
-            search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
-            settings=batch_sets.get_settings(),
-            limit=1,
-            relevance_order=True,
+    assert (
+        len(
+            batch_sets.search_document_ids(
+                db,
+                matter=matter,
+                generation=generation,
+                search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+                settings=batch_sets.get_settings(),
+                limit=1,
+                relevance_order=True,
+            )
         )
-    ) == 1
+        == 1
+    )
     assert retry_sleeps == [0.25, 0.5]
 
     transient_failures[0] = 3

@@ -16,14 +16,20 @@ from app.artifact_gateway import (
     find_workflow_artifact_reference,
 )
 from app.evidence_first_artifacts import (
+    ANALYSIS_EVALUATION_PLAN_SCHEMA_VERSION,
     ANALYSIS_OBSERVATION_FRAGMENT_SCHEMA_VERSION,
+    ANALYSIS_OBSERVATIONS_SCHEMA_VERSION,
     CompactedEvidenceObservations,
     EvidenceEvaluationPlan,
     EvidenceExtractionUnitPlan,
     EvidenceExtractionUnitResult,
     compact_observation_results,
+    compacted_observations_bytes,
+    compacted_observations_derivation_key,
+    evaluation_plan_bytes,
     load_observation_fragment_bytes,
     observation_fragment_attempt_derivation_key,
+    observation_fragment_bytes,
     store_compacted_observations_artifact,
     store_evaluation_plan_artifact,
     store_observation_fragment_artifact,
@@ -70,7 +76,46 @@ class WorkflowEvidenceShadowArtifactRepository:
         self.actor_user_id = actor_user_id
         self.producer_run_id = producer_run_id
 
+    def _find_exact_existing(
+        self,
+        plan: EvidenceEvaluationPlan,
+        *,
+        artifact_type: ArtifactType,
+        schema_version: int,
+        derivation_key: str,
+        content: bytes,
+    ) -> WorkflowArtifactReference | None:
+        reference = find_workflow_artifact_reference(
+            artifact_type=artifact_type,
+            derivation_key=derivation_key,
+            actor_user_id=self.actor_user_id,
+            tenant_id=plan.tenant_id,
+            client_id=plan.client_id,
+        )
+        if reference is None:
+            return None
+        if (
+            reference.core_scope_kind != "MATTER"
+            or reference.core_scope_id != plan.matter_id
+            or reference.schema_version != schema_version
+            or reference.content_hash != sha256(content).hexdigest()
+        ):
+            raise ValueError(
+                f"Existing {artifact_type.value} artifact does not match its deterministic derivation"
+            )
+        return reference
+
     def persist_plan(self, plan: EvidenceEvaluationPlan) -> WorkflowArtifactReference:
+        content = evaluation_plan_bytes(plan)
+        existing = self._find_exact_existing(
+            plan,
+            artifact_type=ArtifactType.ANALYSIS_EVALUATION_PLAN,
+            schema_version=ANALYSIS_EVALUATION_PLAN_SCHEMA_VERSION,
+            derivation_key=plan.plan_hash,
+            content=content,
+        )
+        if existing is not None:
+            return existing
         reference, _created = store_evaluation_plan_artifact(
             plan,
             producer_run_id=self.producer_run_id,
@@ -130,6 +175,21 @@ class WorkflowEvidenceShadowArtifactRepository:
         plan_artifact_id: uuid.UUID,
         result: EvidenceExtractionUnitResult,
     ) -> WorkflowArtifactReference:
+        content = observation_fragment_bytes(plan, [result])
+        derivation_key = observation_fragment_attempt_derivation_key(
+            plan,
+            unit_id=result.unit_id,
+            attempt=result.attempt,
+        )
+        existing = self._find_exact_existing(
+            plan,
+            artifact_type=ArtifactType.ANALYSIS_OBSERVATION_FRAGMENT,
+            schema_version=ANALYSIS_OBSERVATION_FRAGMENT_SCHEMA_VERSION,
+            derivation_key=derivation_key,
+            content=content,
+        )
+        if existing is not None:
+            return existing
         reference, _created = store_observation_fragment_artifact(
             plan,
             plan_artifact_id=plan_artifact_id,
@@ -146,6 +206,17 @@ class WorkflowEvidenceShadowArtifactRepository:
         fragment_artifact_ids: tuple[uuid.UUID, ...],
         result: CompactedEvidenceObservations,
     ) -> WorkflowArtifactReference:
+        content = compacted_observations_bytes(result)
+        derivation_key = compacted_observations_derivation_key(result)
+        existing = self._find_exact_existing(
+            plan,
+            artifact_type=ArtifactType.ANALYSIS_OBSERVATIONS,
+            schema_version=ANALYSIS_OBSERVATIONS_SCHEMA_VERSION,
+            derivation_key=derivation_key,
+            content=content,
+        )
+        if existing is not None:
+            return existing
         reference, _created = store_compacted_observations_artifact(
             plan,
             result=result,

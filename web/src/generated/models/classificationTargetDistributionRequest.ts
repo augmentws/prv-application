@@ -5,9 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { LabelSourceSpecification } from './labelSourceSpecification';
 import type { TrainingScopeSpecification } from './trainingScopeSpecification';
 
 export interface ClassificationTargetDistributionRequest {
   training_scope: TrainingScopeSpecification;
   hierarchy_level?: number | null;
+  label_source?: LabelSourceSpecification | null;
 }
